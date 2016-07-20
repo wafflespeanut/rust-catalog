@@ -1,11 +1,11 @@
 use std::cmp::Ordering::*;
+use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher, SipHasher};
 use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::iter;
 use std::str::FromStr;
-use std::u64;
 
 const SEP: char = '\t';
 const PAD_CHAR: char = ' ';
@@ -19,10 +19,8 @@ fn hash<T: Hash>(obj: &T) -> u64 {
 #[derive(Debug)]
 pub struct HashFile {
     name: String,
-    min_value: u64,
     file: File,
-    hashed: Vec<u64>,
-    key_vals: Vec<String>,
+    hashed: BTreeMap<u64, String>,
     capacity: usize,
     max_row_length: usize,
 }
@@ -31,13 +29,11 @@ impl HashFile {
     pub fn new(name: &str, capacity: usize, length: Option<usize>) -> HashFile {
         HashFile {
             name: name.to_owned(),
-            min_value: u64::MAX,
             file: match length.is_some() {
                 true => OpenOptions::new().read(true).open(name).unwrap(),
                 false => OpenOptions::new().read(true).write(true).create(true).open(name).unwrap()
             },
-            hashed: Vec::with_capacity(capacity),
-            key_vals: Vec::with_capacity(capacity),
+            hashed: BTreeMap::new(),
             capacity: capacity,
             max_row_length: match length {
                 Some(l) => l,
@@ -47,7 +43,9 @@ impl HashFile {
     }
 
     // NOTE: Run this finally to flush the values (if any) from the struct to the file
-    pub fn finish<K: Hash + FromStr>(&mut self) {
+    pub fn finish(&mut self) {
+        println!("Flushing... (row length: {})", self.max_row_length);
+
         // DRY'ing...
         fn write_buffer(buf_writer: &mut BufWriter<&mut File>, line: &str, length: usize) {
             let spaces = match line.len() < length {
@@ -69,7 +67,7 @@ impl HashFile {
                                                  .unwrap();
             let mut buf_writer = BufWriter::new(&mut out_file);
             let mut file_iter = buf_reader.lines().filter_map(|l| l.ok()).peekable();
-            let mut sort_iter = self.hashed.drain(..).zip(self.key_vals.drain(..)).peekable();
+            let mut sort_iter = self.hashed.iter().peekable();
             let mut val_1 = file_iter.next();
             let mut val_2 = sort_iter.next();
 
@@ -77,8 +75,7 @@ impl HashFile {
                 let cur_val_1 = val_1.clone().unwrap();
                 let k_1 = {
                     let mut split = cur_val_1.split(SEP);
-                    let key = split.next().unwrap();
-                    key.parse::<K>().ok().unwrap()
+                    split.next().unwrap()
                 };
 
                 let hash_1 = hash(&k_1);
@@ -119,6 +116,7 @@ impl HashFile {
 
         }
 
+        self.hashed.clear();
         let _ = fs::rename(".hash_file", &self.name);
         self.file = OpenOptions::new().read(true)
                                 .write(true)
@@ -129,62 +127,23 @@ impl HashFile {
 
     // FIXME: Too many unwraps and somewhat inefficient!
     // NOTE: Type parameters should be explicit so that we don't hash incorrectly
-    pub fn insert<K: Display + Hash + FromStr, V: Display + FromStr>(&mut self, key: K, value: V) {
-        let hashed = hash(&key);
-        if hashed < self.min_value {
-            self.min_value = hashed;
-        }
-
+    pub fn insert<K: Display, V: Display + FromStr>(&mut self, key: K, value: V) {
+        let hashed = hash(&key.to_string());
         let string = format!("{}{}{}", key, SEP, value);
         if string.len() > self.max_row_length {
             self.max_row_length = string.len();
         }
 
-        if self.hashed.is_empty() {
-            self.hashed.push(hashed);
-            self.key_vals.push(string);
-            return
-        }
+        self.hashed.insert(hashed, string);
 
-        // Binary search
-
-        let mut low = 0;
-        let mut high = self.hashed.len() - 1;
-
-        while low <= high {
-            let mid = (high + low) / 2;
-            match self.hashed[mid].cmp(&hashed) {
-                Equal => {
-                    let mut old_val = self.key_vals.get_mut(mid).unwrap();
-                    *old_val = string;
-                    return
-                },
-                Greater => {
-                    if mid == 0 {
-                        low = 0;
-                        break
-                    } else {
-                        high = mid - 1;
-                    }
-                },
-                Less => {
-                    low = mid + 1;
-                },
-            }
-        }
-
-        self.hashed.insert(low, hashed);
-        self.key_vals.insert(low, string);
-
-        // Drain, merge the sorted collections, and write to file once the capacity is full
-
-        if self.hashed.len() > self.capacity {
-            self.finish::<K>();
+        if self.hashed.len() > self.capacity {  // flush to file once the capacity is full
+            self.finish();
         }
     }
 
-    pub fn get<K: Display + Hash + FromStr, V: Display + FromStr>(&mut self, key: K) -> Option<V> {
-        let hashed_key = hash(&key);
+    pub fn get<K: Display, V: FromStr>(&mut self, key: K) -> Option<V> {
+        let mut seeks = 0;
+        let hashed_key = hash(&key.to_string());
         let timer = ::std::time::Instant::now();
         let size = self.file.metadata().unwrap().len();
         println!("file size: {}", size);
@@ -206,12 +165,14 @@ impl HashFile {
             let mut line = String::new();
             let _ = self.file.seek(SeekFrom::Start(new_line_pos));
             println!("Seeking to {:?}", new_line_pos);
+            seeks += 1;
+
             let mut reader = BufReader::new(&mut self.file);
             let _ = reader.read_line(&mut line);
             println!("Got {:?}", line);
 
             let mut split = line.split(SEP);
-            let key = split.next().unwrap().parse::<K>().ok().unwrap();
+            let key = split.next().unwrap();
             let hashed = hash(&key);
 
             println!("Comparing {} vs {} in range({}, {}, {})", hashed, hashed_key, low, mid, high);
@@ -220,6 +181,7 @@ impl HashFile {
                 Equal => {
                     let val = split.next().unwrap().parse::<V>().ok().unwrap();
                     println!("Time taken: {:?}", timer.elapsed());
+                    println!("Seeks: {:?}", seeks);
                     return Some(val)
                 },
                 Less => {
@@ -232,6 +194,7 @@ impl HashFile {
         }
 
         println!("Time taken: {:?}", timer.elapsed());
+        println!("Seeks: {:?}", seeks);
         None
     }
 }
