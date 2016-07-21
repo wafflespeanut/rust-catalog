@@ -1,5 +1,6 @@
 use std::cmp::Ordering::*;
 use std::collections::BTreeMap;
+use std::error::Error;
 use std::fmt::Display;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher, SipHasher};
@@ -7,8 +8,7 @@ use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::iter;
 use std::str::FromStr;
 
-const SEP: char = '\t';
-const PAD_CHAR: char = ' ';
+const SEP: char = '\0';
 
 fn hash<T: Hash>(obj: &T) -> u64 {
     let mut hasher = SipHasher::new();
@@ -26,45 +26,52 @@ pub struct HashFile {
 }
 
 impl HashFile {
-    pub fn new(name: &str, capacity: usize, length: Option<usize>) -> HashFile {
-        HashFile {
+    pub fn new(name: &str, capacity: usize, length: Option<usize>) -> Result<HashFile, String> {
+        Ok(HashFile {
             name: name.to_owned(),
-            file: match length.is_some() {
-                true => OpenOptions::new().read(true).open(name).unwrap(),
-                false => OpenOptions::new().read(true).write(true).create(true).open(name).unwrap()
-            },
+            file: try!(match length.is_some() {
+                true => OpenOptions::new().read(true)
+                                          .open(name)
+                                          .map_err(|e| format!("Cannot open file! ({})",
+                                                               e.description())),
+                false => OpenOptions::new().read(true)
+                                           .write(true)
+                                           .create(true)
+                                           .open(name)
+                                           .map_err(|e| format!("Cannot create file! ({})",
+                                                                e.description())),
+            }),
             hashed: BTreeMap::new(),
             capacity: capacity,
-            max_row_length: match length {
-                Some(l) => l,
-                None => 0,
-            },
-        }
+            max_row_length: length.unwrap_or(0),
+        })
     }
 
     // NOTE: Run this finally to flush the values (if any) from the struct to the file
-    pub fn finish(&mut self) {
-        println!("Flushing... (row length: {})", self.max_row_length);
-
+    pub fn finish(&mut self) -> Result<usize, String> {
         // DRY'ing...
-        fn write_buffer(buf_writer: &mut BufWriter<&mut File>, line: &str, length: usize) {
+        fn write_buffer(buf_writer: &mut BufWriter<&mut File>, line: &str, length: usize) -> Result<(), String> {
             let spaces = match line.len() < length {
-                true => iter::repeat(PAD_CHAR).take(length - line.len()).collect::<String>(),
+                true => iter::repeat(SEP).take(length - line.len()).collect::<String>(),
                 false => String::new(),
             };
 
             let line = format!("{}{}\n", line, spaces);
-            let _ = buf_writer.write(line.as_bytes());
-            let _ = buf_writer.flush();
+            try!(buf_writer.write(line.as_bytes())
+                           .map_err(|e| format!("Cannot write line to buffer! ({})", e.description())));
+            try!(buf_writer.flush()
+                           .map_err(|e| format!("Cannot flush the buffer to file!({})", e.description())));
+            Ok(())
         }
 
         {
             let buf_reader = BufReader::new(&mut self.file);
-            let mut out_file = OpenOptions::new().read(true)
-                                                 .write(true)
-                                                 .create(true)
-                                                 .open(".hash_file")
-                                                 .unwrap();
+            let mut out_file = try!(OpenOptions::new().read(true)
+                                                      .write(true)
+                                                      .create(true)
+                                                      .open(".hash_file")
+                                                      .map_err(|e| format!("Cannot create temp file! ({})",
+                                                                           e.description())));
             let mut buf_writer = BufWriter::new(&mut out_file);
             let mut file_iter = buf_reader.lines().filter_map(|l| l.ok()).peekable();
             let mut sort_iter = self.hashed.iter().peekable();
@@ -83,51 +90,53 @@ impl HashFile {
 
                 match hash_1.cmp(&hash_2) {
                     Equal => {
-                        write_buffer(&mut buf_writer, &cur_val_2, self.max_row_length);
+                        try!(write_buffer(&mut buf_writer, &cur_val_2, self.max_row_length));
                         val_1 = file_iter.next();
                         val_2 = sort_iter.next();
                     },
                     Greater => {
-                        write_buffer(&mut buf_writer, &cur_val_2, self.max_row_length);
+                        try!(write_buffer(&mut buf_writer, &cur_val_2, self.max_row_length));
                         val_2 = sort_iter.next();
                     },
                     Less => {
-                        write_buffer(&mut buf_writer, &cur_val_1, self.max_row_length);
+                        try!(write_buffer(&mut buf_writer, &cur_val_1, self.max_row_length));
                         val_1 = file_iter.next();
                     },
                 }
             }
 
             if let Some(line) = val_1 {
-                write_buffer(&mut buf_writer, &line, self.max_row_length);
+                try!(write_buffer(&mut buf_writer, &line, self.max_row_length));
             }
 
             for line in file_iter {
-                write_buffer(&mut buf_writer, &line, self.max_row_length);
+                try!(write_buffer(&mut buf_writer, &line, self.max_row_length));
             }
 
             if let Some((_, line)) = val_2 {
-                write_buffer(&mut buf_writer, &line, self.max_row_length);
+                try!(write_buffer(&mut buf_writer, &line, self.max_row_length));
             }
 
             for (_, line) in sort_iter {
-                write_buffer(&mut buf_writer, &line, self.max_row_length);
+                try!(write_buffer(&mut buf_writer, &line, self.max_row_length));
             }
 
         }
 
         self.hashed.clear();
-        let _ = fs::rename(".hash_file", &self.name);
-        self.file = OpenOptions::new().read(true)
-                                .write(true)
-                                .create(true)
-                                .open(&self.name)
-                                .unwrap();
+        try!(fs::rename(".hash_file", &self.name)
+                .map_err(|e| format!("Cannot rename the temp file! ({})", e.description())));
+        self.file = try!(OpenOptions::new().read(true)
+                                           .write(true)
+                                           .create(true)
+                                           .open(&self.name)
+                                           .map_err(|e| format!("Cannot create new file! ({})",
+                                                                e.description())));
+        Ok(self.max_row_length)
     }
 
-    // FIXME: Too many unwraps and somewhat inefficient!
     // NOTE: Type parameters should be explicit so that we don't hash incorrectly
-    pub fn insert<K: Display, V: Display + FromStr>(&mut self, key: K, value: V) {
+    pub fn insert<K: Display, V: Display + FromStr>(&mut self, key: K, value: V) -> Result<(), String> {
         let hashed = hash(&key.to_string());
         let string = format!("{}{}{}", key, SEP, value);
         if string.len() > self.max_row_length {
@@ -137,52 +146,47 @@ impl HashFile {
         self.hashed.insert(hashed, string);
 
         if self.hashed.len() > self.capacity {  // flush to file once the capacity is full
-            self.finish();
+            try!(self.finish());
         }
+
+        Ok(())
     }
 
-    pub fn get<K: Display, V: FromStr>(&mut self, key: K) -> Option<V> {
-        let mut seeks = 0;
+    pub fn get<K: Display, V: FromStr>(&mut self, key: K) -> Result<Option<V>, String> {
         let hashed_key = hash(&key.to_string());
-        let timer = ::std::time::Instant::now();
-        let size = self.file.metadata().unwrap().len();
-        println!("file size: {}", size);
+        let size = try!(self.file.metadata()
+                                 .map_err(|e| format!("Cannot obtain file metadata ({})", e.description()))
+                                 .map(|m| m.len()));
         if size == 0 {
-            return None
+            return Ok(None)
         }
 
         let row_length = (self.max_row_length + 1) as u64;
-        println!("row length: {:?}", row_length);
         let mut low = 0;
         let mut high = size;
 
         while low <= high {
             let mid = (low + high) / 2;
-            println!("\n{:?}", (low, high, mid));
             // so that we place the cursor at the start of a line
             let new_line_pos = mid - (mid + row_length) % row_length;
-
-            let mut line = String::new();
-            let _ = self.file.seek(SeekFrom::Start(new_line_pos));
-            println!("Seeking to {:?}", new_line_pos);
-            seeks += 1;
+            try!(self.file.seek(SeekFrom::Start(new_line_pos))
+                          .map_err(|e| format!("Cannot seek though file! ({})", e.description())));
 
             let mut reader = BufReader::new(&mut self.file);
-            let _ = reader.read_line(&mut line);
-            println!("Got {:?}", line);
+            let mut line = String::new();
+            try!(reader.read_line(&mut line)
+                       .map_err(|e| format!("Cannot read line from file! ({})", e.description())));
 
             let mut split = line.split(SEP);
             let key = split.next().unwrap();
             let hashed = hash(&key);
 
-            println!("Comparing {} vs {} in range({}, {}, {})", hashed, hashed_key, low, mid, high);
-
             match hashed.cmp(&hashed_key) {
                 Equal => {
-                    let val = split.next().unwrap().parse::<V>().ok().unwrap();
-                    println!("Time taken: {:?}", timer.elapsed());
-                    println!("Seeks: {:?}", seeks);
-                    return Some(val)
+                    let stripped = split.next().unwrap_or("").trim_right_matches(SEP);
+                    let val = try!(stripped.parse::<V>()
+                                           .map_err(|_| format!("Cannot parse the value from file!")));
+                    return Ok(Some(val))
                 },
                 Less => {
                     low = mid + 1;
@@ -193,8 +197,6 @@ impl HashFile {
             }
         }
 
-        println!("Time taken: {:?}", timer.elapsed());
-        println!("Seeks: {:?}", seeks);
-        None
+        Ok(None)
     }
 }
