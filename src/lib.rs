@@ -1,4 +1,3 @@
-use std::cmp::Ordering::*;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::Display;
@@ -51,12 +50,12 @@ impl HashFile {
     pub fn finish(&mut self) -> Result<usize, String> {
         // DRY'ing...
         fn write_buffer(buf_writer: &mut BufWriter<&mut File>, line: &str, length: usize) -> Result<(), String> {
-            let spaces = match line.len() < length {
+            let padding = match line.len() < length {
                 true => iter::repeat(SEP).take(length - line.len()).collect::<String>(),
                 false => String::new(),
             };
 
-            let line = format!("{}{}\n", line, spaces);
+            let line = format!("{}{}\n", line, padding);
             try!(buf_writer.write(line.as_bytes())
                            .map_err(|e| format!("Cannot write line to buffer! ({})", e.description())));
             try!(buf_writer.flush()
@@ -73,39 +72,35 @@ impl HashFile {
                                                       .map_err(|e| format!("Cannot create temp file! ({})",
                                                                            e.description())));
             let mut buf_writer = BufWriter::new(&mut out_file);
-            let mut file_iter = buf_reader.lines().filter_map(|l| l.ok()).peekable();
-            let mut sort_iter = self.hashed.iter().peekable();
-            let mut val_1 = file_iter.next();
-            let mut val_2 = sort_iter.next();
+            let mut file_iter = buf_reader.lines().filter_map(|l| l.ok());
+            let mut sort_iter = self.hashed.iter();
+            let mut file_val = file_iter.next();
+            let mut btree_val = sort_iter.next();
 
-            while val_1.is_some() && val_2.is_some() {
-                let cur_val_1 = val_1.clone().unwrap();
-                let k_1 = {
-                    let mut split = cur_val_1.split(SEP);
-                    split.next().unwrap()
+            while let Some((file_line,
+                            btree_line_hash,
+                            btree_line)) = file_val.clone()
+                                                   .and_then(|v| btree_val.clone()
+                                                                          .map(|(h, val)| (v, h, val))) {
+                let file_line_hash = {
+                    let mut split = file_line.split(SEP);
+                    hash(&split.next().unwrap())
                 };
 
-                let hash_1 = hash(&k_1);
-                let (hash_2, cur_val_2) = val_2.clone().unwrap();
-
-                match hash_1.cmp(&hash_2) {
-                    Equal => {
-                        try!(write_buffer(&mut buf_writer, &cur_val_2, self.max_row_length));
-                        val_1 = file_iter.next();
-                        val_2 = sort_iter.next();
-                    },
-                    Greater => {
-                        try!(write_buffer(&mut buf_writer, &cur_val_2, self.max_row_length));
-                        val_2 = sort_iter.next();
-                    },
-                    Less => {
-                        try!(write_buffer(&mut buf_writer, &cur_val_1, self.max_row_length));
-                        val_1 = file_iter.next();
-                    },
+                if file_line_hash == *btree_line_hash {
+                    try!(write_buffer(&mut buf_writer, &btree_line, self.max_row_length));
+                    file_val = file_iter.next();
+                    btree_val = sort_iter.next();
+                } else if file_line_hash < *btree_line_hash {
+                    try!(write_buffer(&mut buf_writer, &file_line, self.max_row_length));
+                    file_val = file_iter.next();
+                } else {
+                    try!(write_buffer(&mut buf_writer, &btree_line, self.max_row_length));
+                    btree_val = sort_iter.next();
                 }
             }
 
-            if let Some(line) = val_1 {
+            if let Some(line) = file_val {
                 try!(write_buffer(&mut buf_writer, &line, self.max_row_length));
             }
 
@@ -113,7 +108,7 @@ impl HashFile {
                 try!(write_buffer(&mut buf_writer, &line, self.max_row_length));
             }
 
-            if let Some((_, line)) = val_2 {
+            if let Some((_, line)) = btree_val {
                 try!(write_buffer(&mut buf_writer, &line, self.max_row_length));
             }
 
@@ -165,9 +160,11 @@ impl HashFile {
         let mut low = 0;
         let mut high = size;
 
+        // Binary search and file seeking to find the value(s)
+
         while low <= high {
             let mid = (low + high) / 2;
-            // so that we place the cursor at the start of a line
+            // place the cursor at the start of a line
             let new_line_pos = mid - (mid + row_length) % row_length;
             try!(self.file.seek(SeekFrom::Start(new_line_pos))
                           .map_err(|e| format!("Cannot seek though file! ({})", e.description())));
@@ -181,19 +178,15 @@ impl HashFile {
             let key = split.next().unwrap();
             let hashed = hash(&key);
 
-            match hashed.cmp(&hashed_key) {
-                Equal => {
-                    let stripped = split.next().unwrap_or("").trim_right_matches(SEP);
-                    let val = try!(stripped.parse::<V>()
-                                           .map_err(|_| format!("Cannot parse the value from file!")));
-                    return Ok(Some(val))
-                },
-                Less => {
-                    low = mid + 1;
-                },
-                Greater => {
-                    high = mid - 1;
-                },
+            if hashed == hashed_key {
+                let stripped = split.next().unwrap_or("").trim_right_matches(SEP);
+                let val = try!(stripped.parse::<V>()
+                                       .map_err(|_| format!("Cannot parse the value from file!")));
+                return Ok(Some(val))
+            } else if hashed < hashed_key {
+                low = mid + 1;
+            } else {
+                high = mid - 1;
             }
         }
 
