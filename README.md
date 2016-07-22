@@ -1,6 +1,6 @@
 ## rust-catalog
 
-A "file-backed" map, which inserts keys and values into a file in O(n) time, and gets the values in O(log-n) time using binary search and file seeking. For now, it only supports keys and values that support the `Display` and `FromStr` traits (i.e.,) those which can be converted to string and parsed back from string. This will change to serialization in the near future.
+A "file-backed" map, which inserts keys and values into a file in O(n) time, and gets the values in O(log-n) time using binary search and file seeking. For now, it only supports (hashable) keys and values that implement the `Display` and `FromStr` traits (i.e., those which can be converted to string and parsed back from string). This will change to serialization in the near future.
 
 ### Notes
 
@@ -15,3 +15,4 @@ Note that this is still **experimental**, and so use it at your own risk!
  - [ ] keep track of overwritten values and return them as iterator during `get`
  - [ ] serialize the values, so that all (serializable) types can be supported
  - [ ] more methods required for maps
+ - [ ] maintain a separate thread for file-writing, so that we don't block on insertion
