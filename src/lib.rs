@@ -1,3 +1,34 @@
+//! The [`HashMap`][hash-map] and [`BTreeMap`][btree-map] in the standard library
+//! offer very good performance when it comes to inserting and getting stuff,
+//! but they're memory killers. If the "stuff" gets large - say, a trillion
+//! (10<sup>12</sup>) of them, then we're gonna be in trouble, as we'll then
+//! be needing gigs of RAM to hold the data.
+//!
+//! Moreover, once the program quits, all the *hard-earned* stuff gets deallocated,
+//! and we'd have to re-insert them allover again. `HashFile` deals with this specific
+//! problem. It makes use of a `BTreeMap` for storing the keys and values. So, until
+//! it reaches the defined capacity, it offers the same performance as that of the
+//! btree-map. However, once (and whenever) it reaches the capacity, it *flushes*
+//! the stuff to a file (both the parameters can be defined in its methods).
+//!
+//! Hence, at any given moment, the upper limit for the memory eaten by this thing
+//! is set by its [capacity][capacity]. This gives us good control over the space-time
+//! trade-off. But, the flushing will take O(2<sup>n</sup>) time, depending on the
+//! processor and I/O speed, as it does things on the fly with the help of iterators.
+//!
+//! After the [final manual flush][finish], the file can be stored, moved around, and
+//! since it makes use of binary search, values can be obtained in O(log-n) time
+//! whenever required (depending on the seeking speed of the drive). For example,
+//! a seek takes around 0.03 ms, and a file containing a trillion values demands
+//! about 40 seeks (in the worse case), which translates to 1.2 ms.
+//!
+//! [*See the `HashFile` type for more info.*][hash-file]
+//!
+//! [hash-map]: https://doc.rust-lang.org/std/collections/struct.HashMap.html
+//! [btree-map]: https://doc.rust-lang.org/std/collections/struct.BTreeMap.html
+//! [finish]: struct.HashFile.html#method.finish
+//! [capacity]: struct.HashFile.html#method.set_capacity
+//! [hash-file]: struct.HashFile.html
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -55,6 +86,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> KeyValue<K, V> {
     }
 }
 
+// FIXME: This should be changed to serialization
 impl<K: Display + FromStr + Hash, V: Display + FromStr> Display for KeyValue<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}{}{}{}{}", self.key, SEP, self.value, SEP, self.count)
@@ -93,6 +125,26 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
     }
 }
 
+/// An implementation of a "file-based" map which stores key-value pairs in
+/// sorted fashion in a file, and gets them using binary search and file seeking in
+/// O(log-n) time.
+///
+/// During insertion, the hash of the supplied key is obtained (using the built-in
+/// [`SipHasher`][hasher]), which acts as the key for sorting. While flushing, two
+/// iterators (one for the maintained map, and the other for the file) throw the
+/// key-value pairs in ascending order. The hashes of the pairs are compared and
+/// written to a temporary file, and finally the file is renamed to the original file.
+///
+/// Basically, the file is a CSV format with keys and values separated by a null byte.
+/// Each line in the file is ensured to have the same length, by properly padding it
+/// with the null byte (which is done by calling the [`finish`][finish] method). This
+/// is very necessary for finding the key-value pairs. While getting, the hash for
+/// the given key is computed, and a [binary search][search] is made by seeking through
+/// the file.
+///
+/// [finish]: #method.finish
+/// [hasher]: https://doc.rust-lang.org/std/hash/struct.SipHasher.html
+/// [search]: https://en.wikipedia.org/wiki/Binary_search_algorithm
 pub struct HashFile<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> {
     file: File,
     file_path: P,

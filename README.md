@@ -2,17 +2,30 @@
 
 A "file-backed" map, which inserts keys and values into a file in O(n) time, and gets the values in O(log-n) time using binary search and file seeking. For now, it only supports (hashable) keys and values that implement the `Display` and `FromStr` traits (i.e., those which can be converted to string and parsed back from string). This will change to serialization in the near future.
 
-### Why go for this?
+See the [module documentation](https://wafflespeanut.github.io/rust-catalog/catalog/) for more information.
 
-While memory-backed maps are good for fast insertion and getting of data, they're memory-killers. You need gigs of RAM to store, say, a billion keys and values. Moreover, once the data gets deallocated, we have to build the map allover again.
-
-This, on the other hand, takes ages for building (depending on the data, how often it's flushed, IO speed, etc.). But, once it's in place, getting the value (depending on the seek time) is on the order of **milliseconds!**
+### Usage
 
 Note that this is still **experimental**, and so use it at your own risk!
 
+Add this to your `Cargo.toml`...
+
+``` toml
+[dependencies.catalog]
+git = "https://github.com/Wafflespeanut/rust-catalog"
+version = "*"
+```
+
+... and the following to the top of your module,
+
+``` rust
+extern crate catalog;
+
+use catalog::HashFile;
+```
+
 ### Checklist
- - [ ] documentation and examples
- - [ ] keep track of overwritten values and return them as iterator during `get`
+ - [ ] more documentation and examples
  - [ ] serialize the values, so that all (serializable) types can be supported
- - [ ] more methods required for maps
+ - [ ] add more methods required for maps
  - [ ] maintain a separate thread for file-writing, so that we don't block on insertion
