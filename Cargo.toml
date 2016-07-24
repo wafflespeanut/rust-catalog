@@ -1,6 +1,13 @@
 [package]
-name = "rust-catalog"
+name = "catalog"
 version = "0.1.0"
 authors = ["Ravi Shankar <wafflespeanut@gmail.com>"]
+repository = "https://github.com/Wafflespeanut/rust-catalog"
+readme = "README.md"
+license = "MPL-2.0"
+keywords = ["map", "file", "binary search"]
+
+[lib]
+name = "catalog"
 
 [dependencies]

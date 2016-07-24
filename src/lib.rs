@@ -8,6 +8,7 @@ use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::iter;
 use std::mem;
 use std::ops::AddAssign;
+use std::path::Path;
 use std::str::FromStr;
 
 const SEP: char = '\0';
@@ -92,38 +93,39 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
     }
 }
 
-pub struct HashFile<K: Display + FromStr + Hash, V: Display + FromStr> {
-    name: String,
+pub struct HashFile<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> {
     file: File,
+    file_path: P,
     hashed: BTreeMap<u64, KeyValue<K, V>>,
     capacity: usize,
-    max_row_length: usize,
+    line_length: usize,
 }
 
-impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
-    pub fn new(name: &str, capacity: usize, length: Option<usize>) -> Result<HashFile<K, V>, String> {
-        if length.is_none() {
-            let _ = fs::remove_file(name);
-        }
-
+impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile<K, V, P> {
+    pub fn new(path: P) -> Result<HashFile<K, V, P>, String> {
         Ok(HashFile {
-            name: name.to_owned(),
-            file: try!(match length.is_some() {
-                true => OpenOptions::new().read(true)
-                                          .open(name)
-                                          .map_err(|e| format!("Cannot open file! ({})",
-                                                               e.description())),
-                false => OpenOptions::new().read(true)
-                                           .write(true)
-                                           .create(true)
-                                           .open(name)
-                                           .map_err(|e| format!("Cannot create file! ({})",
-                                                                e.description())),
-            }),
+            file: try!(OpenOptions::new()
+                                   .read(true)
+                                   .write(true)
+                                   .create(true)
+                                   .open(&path)
+                                   .map_err(|e| format!("Cannot create/open file! ({})",
+                                                        e.description()))),
+            file_path: path,
             hashed: BTreeMap::new(),
-            capacity: capacity,
-            max_row_length: length.unwrap_or(0),
+            capacity: 0,
+            line_length: 0,
         })
+    }
+
+    pub fn set_capacity(mut self, capacity: usize) -> HashFile<K, V, P> {
+        self.capacity = capacity;
+        self
+    }
+
+    pub fn set_length(mut self, length: usize) -> HashFile<K, V, P> {
+        self.line_length = length;
+        self
     }
 
     /// Run this finally to flush the values (if any) from the struct to the file
@@ -137,29 +139,31 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
 
         {
             let buf_reader = BufReader::new(&mut self.file);
-            let mut out_file = try!(OpenOptions::new().read(true)
-                                                      .write(true)
-                                                      .create(true)
-                                                      .open(".hash_file")
-                                                      .map_err(|e| format!("Cannot create temp file! ({})",
-                                                                           e.description())));
+            let mut out_file = try!(OpenOptions::new()
+                                                .read(true)
+                                                .write(true)
+                                                .create(true)
+                                                .open(".hash_file")
+                                                .map_err(|e| format!("Cannot create temp file! ({})",
+                                                                     e.description())));
             let mut buf_writer = BufWriter::new(&mut out_file);
 
             for line in buf_reader.lines().filter_map(|l| l.ok()) {
                 // Even though this takes a mutable reference, we can be certain that
                 // we've found the maximum row length for this session
-                try!(write_buffer(&mut buf_writer, &line, &mut self.max_row_length));
+                try!(write_buffer(&mut buf_writer, &line, &mut self.line_length));
             }
         }
 
-        try!(fs::rename(".hash_file", &self.name)
+        try!(fs::rename(".hash_file", &self.file_path)
                 .map_err(|e| format!("Cannot rename the temp file! ({})", e.description())));
-        self.file = try!(OpenOptions::new().read(true)
-                                           .write(true)
-                                           .open(&self.name)
-                                           .map_err(|e| format!("Cannot open the working file! ({})",
-                                                                e.description())));
-        Ok(self.max_row_length)
+        self.file = try!(OpenOptions::new()
+                                     .read(true)
+                                     .write(true)
+                                     .open(&self.file_path)
+                                     .map_err(|e| format!("Cannot open the working file! ({})",
+                                                          e.description())));
+        Ok(self.line_length)
     }
 
     fn flush_map(&mut self) -> Result<(), String> {
@@ -210,32 +214,31 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
 
                         file_key_val += btree_key_val;
                         try!(write_buffer(&mut buf_writer, &file_key_val.to_string(),
-                                          &mut self.max_row_length));
+                                          &mut self.line_length));
                     },
                     Ordering::Less => {
                         try!(write_buffer(&mut buf_writer, &file_iter.next().unwrap(),
-                                          &mut self.max_row_length));
+                                          &mut self.line_length));
                     },
                     Ordering::Greater => {
                         let (_, btree_key_val) = map_iter.next().unwrap();
                         try!(write_buffer(&mut buf_writer, &(btree_key_val.to_string()),
-                                          &mut self.max_row_length));
+                                          &mut self.line_length));
                     },
                 }
             }
         }
 
-        try!(fs::rename(".hash_file", &self.name)
+        try!(fs::rename(".hash_file", &self.file_path)
                 .map_err(|e| format!("Cannot rename the temp file! ({})", e.description())));
         self.file = try!(OpenOptions::new().read(true)
                                            .write(true)
-                                           .open(&self.name)
+                                           .open(&self.file_path)
                                            .map_err(|e| format!("Cannot open the working file! ({})",
                                                                 e.description())));
         Ok(())
     }
 
-    // NOTE: Type parameters should be explicit so that we don't hash incorrectly
     pub fn insert(&mut self, key: K, value: V) -> Result<(), String> {
         let key_val = KeyValue::new(key, value);
         let hashed = hash(&key_val);
@@ -252,8 +255,8 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
         Ok(())
     }
 
-    pub fn get(&mut self, key: K) -> Result<Option<(V, usize)>, String> {
-        let hashed_key = hash(&key);
+    pub fn get(&mut self, key: &K) -> Result<Option<(V, usize)>, String> {
+        let hashed_key = hash(key);
         let size = try!(self.file.metadata()
                                  .map_err(|e| format!("Cannot obtain file metadata ({})", e.description()))
                                  .map(|m| m.len()));
@@ -261,7 +264,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
             return Ok(None)
         }
 
-        let row_length = (self.max_row_length + 1) as u64;
+        let row_length = (self.line_length + 1) as u64;
         let mut low = 0;
         let mut high = size;
 
