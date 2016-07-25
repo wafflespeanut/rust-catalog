@@ -1,3 +1,6 @@
+#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
+       html_favicon_url = "https://www.rust-lang.org/favicon.ico", html_root_url = ".")]
+
 //! The [`HashMap`][hash-map] and [`BTreeMap`][btree-map] in the standard library
 //! offer very good performance when it comes to inserting and getting stuff,
 //! but they're memory killers. If the "stuff" gets large - say, a trillion
@@ -119,8 +122,114 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 /// the given key is computed, and a [binary search][search] is made by seeking through
 /// the file.
 ///
+/// # Examples
+///
+/// Once you've added the package to your `Cargo.toml`
+///
+/// ``` toml
+/// [dependencies.catalog]
+/// git = "https://github.com/Wafflespeanut/rust-catalog"
+/// version = "*"
+/// ```
+///
+/// ... it can be used as follows,
+///
+/// ```
+/// extern crate catalog;
+///
+/// use catalog::HashFile;
+///
+/// // This will create a new file in the path (if it doesn't exist)
+/// let mut hash_file: HashFile<usize, _, _> =
+///     try!(HashFile::new("/tmp/SAMPLE.dat").map(|hf| hf.set_capacity(100)));
+///
+/// // We don't have to mention all the types explicitly, leaving it to type inference
+/// // But, there's a reason why I mentioned `usize` (which we'll see in a moment).
+///
+/// // Insert some stuff into the map (in this case, integers and upper case alphabets)
+/// for i in 0..1000 {
+///     try!(hf.insert(i, format!("{}", (65 + (i % 26)) as u8 as char)));
+/// }
+///
+/// // This flushes the data to the file for every 100 key/value pairs, since
+/// // we've set the capacity to 100.
+///
+/// // Call the finish method once you're done with insertion. It's necessary
+/// // because it pads each line and ensures that all the lines have the same length.
+/// try!(hf.finish());
+///
+/// // Now, we're ready to "get" the values.
+/// let value = try!(hf.get(&0));
+/// assert_eq!(Some(("A".to_owned(), 0)), value);
+/// // Note that in addition to the value, there's a number.
+///
+/// // Let's try it again...
+/// try!(hf.insert(0, format!("Z")));
+/// // Don't forget to flush it to the file!
+/// try!(hf.finish());
+///
+/// let value = try!(hf.get(&0));
+/// assert_eq!(Some(("Z".to_owned(), 1)), value);
+///
+/// // So, the number is just a counter. HashFile keeps track of the number of
+/// // times a value has been overridden (with insertion).
+/// ```
+///
+/// Now, let's have a quick peek inside the generated file.
+///
+/// ``` bash
+/// $ head -5 /tmp/SAMPLE.dat
+/// 686K0
+/// 183B0
+/// 595X0
+/// 500G0
+/// 15P0
+/// $ wc -l /tmp/SAMPLE.dat
+/// 1000
+/// $ ls -l /tmp/SAMPLE.dat
+/// -rw-rw-r-- 1 user user 8000 Jul 09 22:10 /tmp/SAMPLE.dat
+/// ```
+///
+/// The file size will (and should) always be a multiple of the number of
+/// key/value pairs, since each line is padded to have the same length.
+/// Now, we can move this file elsewhere, and get the key/value pairs.
+///
+/// ``` rust
+/// // This will open the file in the path (if it exists)
+/// let mut hf: HashFile<usize, String, _> = try!(HashFile::new("/tmp/SAMPLE"));
+/// ```
+///
+/// A couple of things to note here. Before getting, we need to mention the types,
+/// because rustc doesn't know what type we have in the file (and, it'll throw an error).
+///
+/// Moreover, if we hadn't explicitly mentioned `usize` during insertion,
+/// `rustc` would've gone for some default type, and if we mention some other primitive
+/// now, the hashes won't match i.e., `hash(0u32) != hash(0usize)`.
+///
+/// For example, `"2"` can be parsed to all the integer primitives (`u8`, `u64`, `isize`, etc.),
+/// but, they all produce different hashes. In such a case, it's more likely that `HashFile`
+/// returns `None` while getting the value corresponding to a key, even if it exists in
+/// the file. Hence, it's up to the user to handle such cases
+/// (by manually denoting the type during insertion and getting).
+///
+/// ``` rust
+/// // Now, we can get the values...
+/// let value = try!(hf.get(&0));
+/// assert_eq!(Some(("Z".to_owned(), 1)), value);
+///
+/// // ... as many as we want!
+/// let value = try!(hf.get(&1));
+/// assert_eq!(Some(("B".to_owned(), 0)), value);
+/// ```
+///
+/// We've used a lot of `try!` here, because each method invocation involves making OS
+/// calls for manipulating the underlying file descriptor. Since all the methods have been
+/// ensured to return a [`Result<T, E>`][result], `HashFile` can be guaranteed from
+/// panicking along the run.
+///
 /// [finish]: #method.finish
 /// [hasher]: https://doc.rust-lang.org/std/hash/struct.SipHasher.html
+/// [result]: https://doc.rust-lang.org/std/result/enum.Result.html
 /// [search]: https://en.wikipedia.org/wiki/Binary_search_algorithm
 pub struct HashFile<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> {
     file: File,

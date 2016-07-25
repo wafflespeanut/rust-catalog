@@ -16,6 +16,8 @@ git = "https://github.com/Wafflespeanut/rust-catalog"
 version = "*"
 ```
 
+Have a look at the [detailed example](https://wafflespeanut.github.io/rust-catalog/catalog/struct.HashFile.html#examples) for the precise usage.
+
 ### Checklist
  - [x] documentation and examples
  - [ ] serialize the values, so that all (serializable) types can be supported
