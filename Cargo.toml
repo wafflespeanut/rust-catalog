@@ -1,11 +1,15 @@
 [package]
 name = "catalog"
-version = "0.1.0"
-authors = ["Ravi Shankar <wafflespeanut@gmail.com>"]
+description = "A file-based map to store key/value pairs in a file and get them using binary search"
+
+documentation = "https://wafflespeanut.github.io/rust-catalog/catalog/"
 repository = "https://github.com/Wafflespeanut/rust-catalog"
 readme = "README.md"
-license = "MPL-2.0"
-keywords = ["map", "file", "binary search"]
+license = "MIT"
+
+version = "0.1.0"
+authors = ["Ravi Shankar <wafflespeanut@gmail.com>"]
+keywords = ["map", "file", "binary-search", "key-value"]
 
 [lib]
 name = "catalog"
