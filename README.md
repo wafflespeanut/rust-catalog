@@ -8,7 +8,7 @@ See the [module documentation](https://wafflespeanut.github.io/rust-catalog/cata
 
 Note that this is still **experimental**, and so use it at your own risk!
 
-Add this to your `Cargo.toml`...
+Add the following to your `Cargo.toml`...
 
 ``` toml
 [dependencies.catalog]
@@ -16,16 +16,8 @@ git = "https://github.com/Wafflespeanut/rust-catalog"
 version = "*"
 ```
 
-... and the following to the top of your module,
-
-``` rust
-extern crate catalog;
-
-use catalog::HashFile;
-```
-
 ### Checklist
- - [ ] more documentation and examples
+ - [x] documentation and examples
  - [ ] serialize the values, so that all (serializable) types can be supported
  - [ ] add more methods required for maps
  - [ ] maintain a separate thread for file-writing, so that we don't block on insertion

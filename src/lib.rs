@@ -5,11 +5,12 @@
 //! be needing gigs of RAM to hold the data.
 //!
 //! Moreover, once the program quits, all the *hard-earned* stuff gets deallocated,
-//! and we'd have to re-insert them allover again. `HashFile` deals with this specific
-//! problem. It makes use of a `BTreeMap` for storing the keys and values. So, until
-//! it reaches the defined capacity, it offers the same performance as that of the
-//! btree-map. However, once (and whenever) it reaches the capacity, it *flushes*
-//! the stuff to a file (both the parameters can be defined in its methods).
+//! and we'd have to re-insert them allover again. [`HashFile`][hash-file] deals
+//! with this specific problem. It makes use of a `BTreeMap` for storing the keys
+//! and values. So, until it reaches the defined capacity, it offers the same
+//! performance as that of the btree-map. However, once (and whenever) it reaches
+//! the capacity, it *flushes* the stuff to a file (both the parameters can be
+//! defined in its methods).
 //!
 //! Hence, at any given moment, the upper limit for the memory eaten by this thing
 //! is set by its [capacity][capacity]. This gives us good control over the space-time
@@ -18,9 +19,9 @@
 //!
 //! After the [final manual flush][finish], the file can be stored, moved around, and
 //! since it makes use of binary search, values can be obtained in O(log-n) time
-//! whenever required (depending on the seeking speed of the drive). For example,
-//! a seek takes around 0.03 ms, and a file containing a trillion values demands
-//! about 40 seeks (in the worse case), which translates to 1.2 ms.
+//! whenever they're required (depending on the seeking speed of the drive). For
+//! example, an average seek takes around 0.03 ms, and a file containing a trillion
+//! values demands about 40 seeks (in the worse case), which translates to 1.2 ms.
 //!
 //! [*See the `HashFile` type for more info.*][hash-file]
 //!
@@ -29,46 +30,22 @@
 //! [finish]: struct.HashFile.html#method.finish
 //! [capacity]: struct.HashFile.html#method.set_capacity
 //! [hash-file]: struct.HashFile.html
+mod helpers;
+
+use helpers::{create_temp_file, hash, write_buffer};
+use helpers::{SEP, TEMP_FILE};
+
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs::{self, File, OpenOptions};
-use std::hash::{Hash, Hasher, SipHasher};
-use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
-use std::iter;
+use std::hash::{Hash, Hasher};
+use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom};
 use std::mem;
 use std::ops::AddAssign;
 use std::path::Path;
 use std::str::FromStr;
-
-const SEP: char = '\0';
-
-fn hash<T: Hash>(obj: &T) -> u64 {
-    let mut hasher = SipHasher::new();
-    obj.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn write_buffer(buf_writer: &mut BufWriter<&mut File>,
-                line: &str, pad_length: &mut usize) -> Result<(), String> {
-    let padding = if line.len() < *pad_length {
-        iter::repeat(SEP).take(*pad_length - line.len()).collect::<String>()
-    } else {
-        if line.len() > *pad_length {
-            *pad_length = line.len();   // change pad length if we get a giant string
-        }
-
-        String::new()
-    };
-
-    let line = format!("{}{}\n", line, padding);
-    try!(buf_writer.write(line.as_bytes())
-                   .map_err(|e| format!("Cannot write line to buffer! ({})", e.description())));
-    try!(buf_writer.flush()
-                   .map_err(|e| format!("Cannot flush the buffer to file!({})", e.description())));
-    Ok(())
-}
 
 struct KeyValue<K: Display + FromStr + Hash, V: Display + FromStr> {
     key: K,
@@ -147,7 +124,8 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 /// [search]: https://en.wikipedia.org/wiki/Binary_search_algorithm
 pub struct HashFile<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> {
     file: File,
-    file_path: P,
+    path: P,
+    size: u64,
     hashed: BTreeMap<u64, KeyValue<K, V>>,
     capacity: usize,
     line_length: usize,
@@ -155,18 +133,36 @@ pub struct HashFile<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<
 
 impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile<K, V, P> {
     pub fn new(path: P) -> Result<HashFile<K, V, P>, String> {
+        let mut file = try!(OpenOptions::new()
+                                        .read(true)
+                                        .write(true)
+                                        .create(true)
+                                        .open(&path)
+                                        .map_err(|e| format!("Cannot create/open file! ({})",
+                                                             e.description())));
+        let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+
         Ok(HashFile {
-            file: try!(OpenOptions::new()
-                                   .read(true)
-                                   .write(true)
-                                   .create(true)
-                                   .open(&path)
-                                   .map_err(|e| format!("Cannot create/open file! ({})",
-                                                        e.description()))),
-            file_path: path,
             hashed: BTreeMap::new(),
             capacity: 0,
-            line_length: 0,
+            line_length: match file_size > 0 {
+                true => {
+                    let mut buf_reader = BufReader::new(&mut file);
+                    let mut line = String::new();
+                    let _ = try!(buf_reader.read_line(&mut line)
+                                           .map_err(|e| format!("Cannot read line from file! ({})",
+                                                                e.description())));
+                    line.trim_right().len()
+                },
+                false => 0,
+            },
+            file: {
+                try!(file.seek(SeekFrom::Start(0))
+                         .map_err(|e| format!("Cannot seek through file! ({})", e.description())));
+                file
+            },
+            path: path,
+            size: file_size,
         })
     }
 
@@ -175,13 +171,24 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
         self
     }
 
-    pub fn set_length(mut self, length: usize) -> HashFile<K, V, P> {
-        self.line_length = length;
-        self
+    fn rename_temp_file(&mut self) -> Result<(), String> {
+        try!(fs::rename(TEMP_FILE, &self.path)
+                .map_err(|e| format!("Cannot rename the temp file! ({})", e.description())));
+        self.file = try!(OpenOptions::new()
+                                     .read(true)
+                                     .write(true)
+                                     .open(&self.path)
+                                     .map_err(|e| format!("Cannot open the working file! ({})",
+                                                          e.description())));
+        self.size = try!(self.file.metadata()
+                                  .map_err(|e| format!("Cannot obtain file metadata ({})",
+                                                       e.description()))
+                                  .map(|m| m.len()));
+        Ok(())
     }
 
     /// Run this finally to flush the values (if any) from the struct to the file
-    pub fn finish(&mut self) -> Result<usize, String> {
+    pub fn finish(&mut self) -> Result<(), String> {
         if self.hashed.len() > 0 {
             try!(self.flush_map());
         }
@@ -191,13 +198,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
 
         {
             let buf_reader = BufReader::new(&mut self.file);
-            let mut out_file = try!(OpenOptions::new()
-                                                .read(true)
-                                                .write(true)
-                                                .create(true)
-                                                .open(".hash_file")
-                                                .map_err(|e| format!("Cannot create temp file! ({})",
-                                                                     e.description())));
+            let mut out_file = try!(create_temp_file());
             let mut buf_writer = BufWriter::new(&mut out_file);
 
             for line in buf_reader.lines().filter_map(|l| l.ok()) {
@@ -207,15 +208,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
             }
         }
 
-        try!(fs::rename(".hash_file", &self.file_path)
-                .map_err(|e| format!("Cannot rename the temp file! ({})", e.description())));
-        self.file = try!(OpenOptions::new()
-                                     .read(true)
-                                     .write(true)
-                                     .open(&self.file_path)
-                                     .map_err(|e| format!("Cannot open the working file! ({})",
-                                                          e.description())));
-        Ok(self.line_length)
+        self.rename_temp_file()
     }
 
     fn flush_map(&mut self) -> Result<(), String> {
@@ -223,12 +216,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
 
         {
             let buf_reader = BufReader::new(&mut self.file);
-            let mut out_file = try!(OpenOptions::new().read(true)
-                                                      .write(true)
-                                                      .create(true)
-                                                      .open(".hash_file")
-                                                      .map_err(|e| format!("Cannot create temp file! ({})",
-                                                                           e.description())));
+            let mut out_file = try!(create_temp_file());
             let mut buf_writer = BufWriter::new(&mut out_file);
 
             // both the iterators throw the values in ascending order
@@ -281,14 +269,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
             }
         }
 
-        try!(fs::rename(".hash_file", &self.file_path)
-                .map_err(|e| format!("Cannot rename the temp file! ({})", e.description())));
-        self.file = try!(OpenOptions::new().read(true)
-                                           .write(true)
-                                           .open(&self.file_path)
-                                           .map_err(|e| format!("Cannot open the working file! ({})",
-                                                                e.description())));
-        Ok(())
+        self.rename_temp_file()
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Result<(), String> {
@@ -309,16 +290,13 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
 
     pub fn get(&mut self, key: &K) -> Result<Option<(V, usize)>, String> {
         let hashed_key = hash(key);
-        let size = try!(self.file.metadata()
-                                 .map_err(|e| format!("Cannot obtain file metadata ({})", e.description()))
-                                 .map(|m| m.len()));
-        if size == 0 {
+        if self.size == 0 {
             return Ok(None)
         }
 
         let row_length = (self.line_length + 1) as u64;
         let mut low = 0;
-        let mut high = size;
+        let mut high = self.size;
 
         // Binary search and file seeking to find the value(s)
 
