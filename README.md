@@ -11,9 +11,7 @@ Note that this is still **experimental**, and so use it at your own risk!
 Add the following to your `Cargo.toml`...
 
 ``` toml
-[dependencies.catalog]
-git = "https://github.com/Wafflespeanut/rust-catalog"
-version = "*"
+catalog = "0.1.0"
 ```
 
 Have a look at the [detailed example](https://wafflespeanut.github.io/rust-catalog/catalog/struct.HashFile.html#examples) for the precise usage.
@@ -21,5 +19,6 @@ Have a look at the [detailed example](https://wafflespeanut.github.io/rust-catal
 ### Checklist
  - [x] documentation and examples
  - [ ] serialize the values, so that all (serializable) types can be supported
+ - [ ] go for memory-mapped index
  - [ ] add more methods required for maps
  - [ ] maintain a separate thread for file-writing, so that we don't block on insertion

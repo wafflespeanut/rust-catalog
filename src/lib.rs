@@ -127,9 +127,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 /// Once you've added the package to your `Cargo.toml`
 ///
 /// ``` toml
-/// [dependencies.catalog]
-/// git = "https://github.com/Wafflespeanut/rust-catalog"
-/// version = "*"
+/// catalog = "0.1.0"
 /// ```
 ///
 /// ... it can be used as follows,
