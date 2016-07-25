@@ -32,8 +32,8 @@
 //! [hash-file]: struct.HashFile.html
 mod helpers;
 
-use helpers::{create_temp_file, hash, write_buffer};
-use helpers::{SEP, TEMP_FILE};
+use helpers::{hash, get_size, read_one_line, seek_from_start, write_buffer};
+use helpers::{SEP, TEMP_FILE, create_temp_file};
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -41,7 +41,7 @@ use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, BufWriter};
 use std::mem;
 use std::ops::AddAssign;
 use std::path::Path;
@@ -112,7 +112,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 /// key-value pairs in ascending order. The hashes of the pairs are compared and
 /// written to a temporary file, and finally the file is renamed to the original file.
 ///
-/// Basically, the file is a CSV format with keys and values separated by a null byte.
+/// Basically, the file is a DSV format with keys and values separated by a null byte.
 /// Each line in the file is ensured to have the same length, by properly padding it
 /// with the null byte (which is done by calling the [`finish`][finish] method). This
 /// is very necessary for finding the key-value pairs. While getting, the hash for
@@ -140,25 +140,20 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
                                         .open(&path)
                                         .map_err(|e| format!("Cannot create/open file! ({})",
                                                              e.description())));
-        let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let file_size = get_size(&file).unwrap_or(0);
 
         Ok(HashFile {
             hashed: BTreeMap::new(),
             capacity: 0,
             line_length: match file_size > 0 {
                 true => {
-                    let mut buf_reader = BufReader::new(&mut file);
-                    let mut line = String::new();
-                    let _ = try!(buf_reader.read_line(&mut line)
-                                           .map_err(|e| format!("Cannot read line from file! ({})",
-                                                                e.description())));
+                    let line = try!(read_one_line(&mut file));
                     line.trim_right().len()
                 },
                 false => 0,
             },
             file: {
-                try!(file.seek(SeekFrom::Start(0))
-                         .map_err(|e| format!("Cannot seek through file! ({})", e.description())));
+                try!(seek_from_start(&mut file, 0));
                 file
             },
             path: path,
@@ -180,16 +175,18 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
                                      .open(&self.path)
                                      .map_err(|e| format!("Cannot open the working file! ({})",
                                                           e.description())));
-        self.size = try!(self.file.metadata()
-                                  .map_err(|e| format!("Cannot obtain file metadata ({})",
-                                                       e.description()))
-                                  .map(|m| m.len()));
+        self.size = try!(get_size(&self.file));
         Ok(())
     }
 
     /// Run this finally to flush the values (if any) from the struct to the file
     pub fn finish(&mut self) -> Result<(), String> {
         if self.hashed.len() > 0 {
+            // Seeking, so that we can make sure we're reading from the start.
+            // Say, we `get` something (after calling this method) and insert
+            // more stuff, and call this method once more. Now, the cursor won't
+            // be at the start of the file.
+            try!(seek_from_start(&mut self.file, 0));
             try!(self.flush_map());
         }
 
@@ -239,7 +236,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
                         file_key_hash.cmp(btree_key_hash)
                     },
                     (Some(_), None) => Ordering::Less,
-                    (None, Some(&(_, _))) => Ordering::Greater,
+                    (None, Some(_)) => Ordering::Greater,
                     (None, None) => break,
                 };
 
@@ -304,13 +301,8 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
             let mid = (low + high) / 2;
             // place the cursor at the start of a line
             let new_line_pos = mid - (mid + row_length) % row_length;
-            try!(self.file.seek(SeekFrom::Start(new_line_pos))
-                          .map_err(|e| format!("Cannot seek though file! ({})", e.description())));
-
-            let mut reader = BufReader::new(&mut self.file);
-            let mut line = String::new();
-            try!(reader.read_line(&mut line)
-                       .map_err(|e| format!("Cannot read line from file! ({})", e.description())));
+            try!(seek_from_start(&mut self.file, new_line_pos));
+            let line = try!(read_one_line(&mut self.file));
 
             // we'll only need the hash of the key
             let mut split = line.split(SEP);

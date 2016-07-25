@@ -1,14 +1,13 @@
 use std::error::Error;
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher, SipHasher};
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::iter;
 
 pub const SEP: char = '\0';
 pub const TEMP_FILE: &'static str = ".hash_file";
 
-/// Computes the hash for the given object using the built-in
-/// [`SipHasher`](https://doc.rust-lang.org/std/hash/struct.SipHasher.html)
+/// Computes the hash for the given object using the built-in `SipHasher`
 pub fn hash<T: Hash>(obj: &T) -> u64 {
     let mut hasher = SipHasher::new();
     obj.hash(&mut hasher);
@@ -37,7 +36,7 @@ pub fn write_buffer(buf_writer: &mut BufWriter<&mut File>,
     Ok(())
 }
 
-/// Creates a temp file and opens in read/write mode
+/// Creates a temp file and opens it in read/write mode
 pub fn create_temp_file() -> Result<File, String> {
     OpenOptions::new()
                 .read(true)
@@ -46,4 +45,24 @@ pub fn create_temp_file() -> Result<File, String> {
                 .open(TEMP_FILE)
                 .map_err(|e| format!("Cannot create temp file! ({})",
                                      e.description()))
+}
+
+pub fn seek_from_start(file: &mut File, pos: u64) -> Result<(), String> {
+    file.seek(SeekFrom::Start(pos))
+        .map(|_| ())
+        .map_err(|e| format!("Cannot seek through file! ({})", e.description()))
+}
+
+pub fn get_size(file: &File) -> Result<u64, String> {
+    file.metadata()
+        .map(|m| m.len())
+        .map_err(|e| format!("Cannot obtain file metadata ({})", e.description()))
+}
+
+pub fn read_one_line(file: &mut File) -> Result<String, String> {
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    reader.read_line(&mut line)
+          .map(|_| line)
+          .map_err(|e| format!("Cannot read line from file! ({})", e.description()))
 }
