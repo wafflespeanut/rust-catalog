@@ -17,8 +17,10 @@ catalog = "0.1.0"
 Have a look at the [detailed example](https://wafflespeanut.github.io/rust-catalog/catalog/struct.HashFile.html#examples) for the precise usage.
 
 ### Checklist
- - [x] documentation and examples
+ - [x] basic documentation and examples
  - [ ] serialize the values, so that all (serializable) types can be supported
- - [ ] go for memory-mapped index
- - [ ] add more methods required for maps
+ - [ ] maintain an auxiliary index for speeding up the search
+ - [ ] add more methods required for maps (for now, it only supports `insert` and `get`)
+ - [ ] documentation of methods
+ - [ ] memory-mapped file?
  - [ ] maintain a separate thread for file-writing, so that we don't block on insertion

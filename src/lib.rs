@@ -23,8 +23,12 @@
 //! After the [final manual flush][finish], the file can be stored, moved around, and
 //! since it makes use of binary search, values can be obtained in O(log-n) time
 //! whenever they're required (depending on the seeking speed of the drive). For
-//! example, an average seek takes around 0.03 ms, and a file containing a trillion
-//! values demands about 40 seeks (in the worse case), which translates to 1.2 ms.
+//! example, an average seek takes around 0.3 ms, and a file containing a trillion
+//! values demands about 40 seeks (in the worse case), which translates to 12 ms.
+//!
+//! This kind of "search and seek" is [already being used](wiki) by databases. But,
+//! the system is simply an unnecessary complication if you just want a table with
+//! a *zillion* rows with only two columns (a key and a value).
 //!
 //! [*See the `HashFile` type for more info.*][hash-file]
 //!
@@ -33,6 +37,7 @@
 //! [finish]: struct.HashFile.html#method.finish
 //! [capacity]: struct.HashFile.html#method.set_capacity
 //! [hash-file]: struct.HashFile.html
+/// [wiki]: https://en.wikipedia.org/wiki/B-tree#B-tree_usage_in_databases
 mod helpers;
 
 use helpers::{hash, get_size, read_one_line, seek_from_start, write_buffer};
@@ -50,6 +55,7 @@ use std::ops::AddAssign;
 use std::path::Path;
 use std::str::FromStr;
 
+// FIXME: have a bool for marking key/vals to be removed (required for `remove` method)
 struct KeyValue<K: Display + FromStr + Hash, V: Display + FromStr> {
     key: K,
     value: V,
@@ -188,13 +194,13 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 /// -rw-rw-r-- 1 user user 8000 Jul 09 22:10 /tmp/SAMPLE.dat
 /// ```
 ///
-/// The file size will (and should) always be a multiple of the number of
+/// The file size will (and should!) always be a multiple of the number of
 /// key/value pairs, since each line is padded to have the same length.
-/// Now, we can move this file elsewhere, and get the key/value pairs.
+/// Now, we can have another program to get the key/value pairs.
 ///
 /// ``` rust
 /// // This will open the file in the path (if it exists)
-/// let mut hf: HashFile<usize, String, _> = try!(HashFile::new("/tmp/SAMPLE"));
+/// let mut hf: HashFile<usize, String, _> = try!(HashFile::new("/tmp/SAMPLE.dat"));
 /// ```
 ///
 /// A couple of things to note here. Before getting, we need to mention the types,
@@ -225,6 +231,27 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 /// ensured to return a [`Result<T, E>`][result], `HashFile` can be guaranteed from
 /// panicking along the run.
 ///
+/// # Advantages:
+/// - **Control over memory:** You're planning to put a great deal of "stuff" into a map, but you
+/// cannot afford the memory it demands. You wanna have control on how much memory your map can
+/// consume. That said, you still want a map which can throw the values for your requested keys in
+/// appreciable time.
+///
+/// - **Long term storage:** You're sure that the large "stuff" won't change in the near future,
+/// and so you're not willing to risk the deallocation (when the program quits) or re-insertion
+/// (whenever the program starts).
+///
+/// # Drawbacks:
+/// - **Giant file:** Values that can serialize to a large number of bytes, such as sequences,
+/// recursive types and maps can have long lines in the file, which leads to a magnanimous
+/// padding in other lines (thereby increasing the file size).
+///
+/// - **Sluggish insertion:** Re-allocation in memory is lightning fast, while putting stuff into
+///  the usual maps, and so it won't be obvious during the execution of a program. But, that's not
+/// the case when it comes to file. Flushing to a file takes time (as it makes OS calls), and it
+/// increases exponentially as O(2<sup>n</sup>) during insertion, which would be *very* obvious
+/// in our case.
+///
 /// [finish]: #method.finish
 /// [hasher]: https://doc.rust-lang.org/std/hash/struct.SipHasher.html
 /// [result]: https://doc.rust-lang.org/std/result/enum.Result.html
@@ -239,6 +266,7 @@ pub struct HashFile<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<
 }
 
 impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile<K, V, P> {
+    /// Create a new `HashFile` for mapping key/value pairs in the given path
     pub fn new(path: P) -> Result<HashFile<K, V, P>, String> {
         let mut file = try!(OpenOptions::new()
                                         .read(true)
@@ -268,6 +296,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
         })
     }
 
+    /// Set the capacity of the `HashFile` (to flush to the file whenever it exceeds this value)
     pub fn set_capacity(mut self, capacity: usize) -> HashFile<K, V, P> {
         self.capacity = capacity;
         self
@@ -376,6 +405,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
         self.rename_temp_file()
     }
 
+    /// Insert a key/value pair
     pub fn insert(&mut self, key: K, value: V) -> Result<(), String> {
         let key_val = KeyValue::new(key, value);
         let hashed = hash(&key_val);
@@ -392,6 +422,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
         Ok(())
     }
 
+    /// Get the value corresponding to the key from the file
     pub fn get(&mut self, key: &K) -> Result<Option<(V, usize)>, String> {
         let hashed_key = hash(key);
         if self.size == 0 {
