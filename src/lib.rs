@@ -28,7 +28,7 @@
 //!
 //! This kind of "search and seek" is [already being used](wiki) by databases. But,
 //! the system is simply an unnecessary complication if you just want a table with
-//! a *zillion* rows with only two columns (a key and a value).
+//! a *zillion* rows and only two columns (a key and a value).
 //!
 //! [*See the `HashFile` type for more info.*][hash-file]
 //!
@@ -40,20 +40,21 @@
 /// [wiki]: https://en.wikipedia.org/wiki/B-tree#B-tree_usage_in_databases
 mod helpers;
 
-use helpers::{hash, get_size, read_one_line, seek_from_start, write_buffer};
-use helpers::{SEP, TEMP_FILE, create_temp_file};
+use helpers::{SEP, create_or_open_file, hash, get_size};
+use helpers::{read_one_line, seek_from_start, write_buffer};
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter};
 use std::mem;
 use std::ops::AddAssign;
-use std::path::Path;
 use std::str::FromStr;
+
+const TEMP_FILE: &'static str = ".hash_file";
 
 // FIXME: have a bool for marking key/vals to be removed (required for `remove` method)
 struct KeyValue<K: Display + FromStr + Hash, V: Display + FromStr> {
@@ -144,7 +145,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 /// use catalog::HashFile;
 ///
 /// // This will create a new file in the path (if it doesn't exist)
-/// let mut hash_file: HashFile<usize, _, _> =
+/// let mut hash_file: HashFile<usize, _> =
 ///     try!(HashFile::new("/tmp/SAMPLE.dat").map(|hf| hf.set_capacity(100)));
 ///
 /// // We don't have to mention all the types explicitly, leaving it to type inference
@@ -200,7 +201,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 ///
 /// ``` rust
 /// // This will open the file in the path (if it exists)
-/// let mut hf: HashFile<usize, String, _> = try!(HashFile::new("/tmp/SAMPLE.dat"));
+/// let mut hf: HashFile<usize, String> = try!(HashFile::new("/tmp/SAMPLE.dat"));
 /// ```
 ///
 /// A couple of things to note here. Before getting, we need to mention the types,
@@ -256,25 +257,19 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 /// [hasher]: https://doc.rust-lang.org/std/hash/struct.SipHasher.html
 /// [result]: https://doc.rust-lang.org/std/result/enum.Result.html
 /// [search]: https://en.wikipedia.org/wiki/Binary_search_algorithm
-pub struct HashFile<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> {
+pub struct HashFile<K: Display + FromStr + Hash, V: Display + FromStr> {
     file: File,
-    path: P,
+    path: String,
     size: u64,
     hashed: BTreeMap<u64, KeyValue<K, V>>,
     capacity: usize,
     line_length: usize,
 }
 
-impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile<K, V, P> {
+impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
     /// Create a new `HashFile` for mapping key/value pairs in the given path
-    pub fn new(path: P) -> Result<HashFile<K, V, P>, String> {
-        let mut file = try!(OpenOptions::new()
-                                        .read(true)
-                                        .write(true)
-                                        .create(true)
-                                        .open(&path)
-                                        .map_err(|e| format!("Cannot create/open file! ({})",
-                                                             e.description())));
+    pub fn new(path: &str) -> Result<HashFile<K, V>, String> {
+        let mut file = try!(create_or_open_file(&path));
         let file_size = get_size(&file).unwrap_or(0);
 
         Ok(HashFile {
@@ -291,26 +286,21 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
                 try!(seek_from_start(&mut file, 0));
                 file
             },
-            path: path,
+            path: path.to_owned(),
             size: file_size,
         })
     }
 
     /// Set the capacity of the `HashFile` (to flush to the file whenever it exceeds this value)
-    pub fn set_capacity(mut self, capacity: usize) -> HashFile<K, V, P> {
+    pub fn set_capacity(mut self, capacity: usize) -> HashFile<K, V> {
         self.capacity = capacity;
         self
     }
 
     fn rename_temp_file(&mut self) -> Result<(), String> {
-        try!(fs::rename(TEMP_FILE, &self.path)
+        try!(fs::rename(format!("{}{}", &self.path, TEMP_FILE), &self.path)
                 .map_err(|e| format!("Cannot rename the temp file! ({})", e.description())));
-        self.file = try!(OpenOptions::new()
-                                     .read(true)
-                                     .write(true)
-                                     .open(&self.path)
-                                     .map_err(|e| format!("Cannot open the working file! ({})",
-                                                          e.description())));
+        self.file = try!(create_or_open_file(&self.path));
         self.size = try!(get_size(&self.file));
         Ok(())
     }
@@ -331,7 +321,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
 
         {
             let buf_reader = BufReader::new(&mut self.file);
-            let mut out_file = try!(create_temp_file());
+            let mut out_file = try!(create_or_open_file(&format!("{}{}", &self.path, TEMP_FILE)));
             let mut buf_writer = BufWriter::new(&mut out_file);
 
             for line in buf_reader.lines().filter_map(|l| l.ok()) {
@@ -349,7 +339,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr, P: AsRef<Path>> HashFile
 
         {
             let buf_reader = BufReader::new(&mut self.file);
-            let mut out_file = try!(create_temp_file());
+            let mut out_file = try!(create_or_open_file(&format!("{}{}", &self.path, TEMP_FILE)));
             let mut buf_writer = BufWriter::new(&mut out_file);
 
             // both the iterators throw the values in ascending order

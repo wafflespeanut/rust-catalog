@@ -5,7 +5,6 @@ use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::iter;
 
 pub const SEP: char = '\0';
-pub const TEMP_FILE: &'static str = ".hash_file";
 
 /// Computes the hash for the given object using the built-in `SipHasher`
 pub fn hash<T: Hash>(obj: &T) -> u64 {
@@ -36,15 +35,15 @@ pub fn write_buffer(buf_writer: &mut BufWriter<&mut File>,
     Ok(())
 }
 
-/// Creates a temp file and opens it in read/write mode
-pub fn create_temp_file() -> Result<File, String> {
+/// Opens a file in read/write mode (or creates if it doesn't exist)
+pub fn create_or_open_file(path: &str) -> Result<File, String> {
     OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
-                .open(TEMP_FILE)
-                .map_err(|e| format!("Cannot create temp file! ({})",
-                                     e.description()))
+                .open(path)
+                .map_err(|e| format!("Cannot create/open file at {}! ({})",
+                                     path, e.description()))
 }
 
 pub fn seek_from_start(file: &mut File, pos: u64) -> Result<(), String> {
