@@ -12,7 +12,7 @@
 //! with this specific problem. It makes use of a `BTreeMap` for storing the keys
 //! and values. So, until it reaches the defined capacity, it offers the same
 //! performance as that of the btree-map. However, once (and whenever) it reaches
-//! the capacity, it *flushes* the stuff to a file (both the parameters can be
+//! the capacity, it *flushes* the stuff to a file (the necessary parameters can be
 //! defined in its methods).
 //!
 //! Hence, at any given moment, the upper limit for the memory eaten by this thing
@@ -113,22 +113,34 @@ impl<K: Display + FromStr + Hash> Hash for KeyIndex<K> {
     }
 }
 
-/// An implementation of a "file-based" map which stores key-value pairs in
-/// sorted fashion in a file, and gets them using binary search and file seeking in
-/// O(log-n) time.
+/// An implementation of a "file-based" map which stores key-value pairs in sorted fashion in
+/// file(s), and gets them using binary search and file seeking in O(log-n) time.
 ///
-/// During insertion, the hash of the supplied key is obtained (using the built-in
-/// [`SipHasher`][hasher]), which acts as the key for sorting. While flushing, two
-/// iterators (one for the maintained map, and the other for the file) throw the
-/// key-value pairs in ascending order. The hashes of the pairs are compared and
-/// written to a temporary file, and finally the file is renamed to the original file.
+/// # Design
 ///
-/// Basically, the file is a DSV format with keys and values separated by a null byte.
-/// Each line in the file is ensured to have the same length, by properly padding it
-/// with the null byte (which is done by calling the [`finish`][finish] method). This
-/// is very necessary for finding the key-value pairs. While getting, the hash for
-/// the given key is computed, and a [binary search][search] is made by seeking through
-/// the file.
+/// `HashFile` maintains two files - one for the keys and value indices, and the other
+/// for the values themselves. Since it uses padding to maintain constant line length
+/// throughout the file, large values can lead to extremely huge and sparse files. Having two
+/// files eliminates this problem.
+///
+/// - During insertion, the hash of the supplied key is obtained (using the built-in
+/// [`SipHasher`][hasher]), which acts as the key for sorting.
+///
+/// - While flushing, two iterators (one for the key/values in the underlying map, another
+/// for the keys in the file) and two writers (one for key-index, another for the values)
+/// are maintained. The readers throw key/values in ascending order, the hashes of the keys
+/// are compared, the values are appended to a temporary file, and the keys (along with the
+/// value indices) are written to another temporary file. In the end, both the files are renamed.
+///
+/// - Basically, the files are in DSV format - one has keys and value indices separated by a
+/// null byte, while the other has values separated by `\n`. Each line in the "key" file is
+/// ensured to have the same length, by properly padding it with null bytes, which is done by
+/// calling the [`finish`][finish] method. The method also does a cleanup and gets rid of
+/// unnecessary values from the "data" file.
+///
+/// - While getting, the hash for the given key is computed, and a [binary search][search]
+/// is made by seeking through the file. The value index is found in O(log-n) time, and the value
+/// is obtained from the "data" file in O(1) time.
 ///
 /// # Examples
 ///
@@ -184,19 +196,30 @@ impl<K: Display + FromStr + Hash> Hash for KeyIndex<K> {
 /// Now, let's have a quick peek inside the generated file.
 ///
 /// ``` bash
-/// $ head -5 /tmp/SAMPLE
-/// 686K0
-/// 183B0
-/// 595X0
-/// 500G0
-/// 15P0
-/// $ wc -l /tmp/SAMPLE
-/// 1000
-/// $ ls -l /tmp/SAMPLE
-/// -rw-rw-r-- 1 user user 8000 Jul 09 22:10 /tmp/SAMPLE
+/// $ head -5 /tmp/SAMPLE*
+/// ==> /tmp/SAMPLE <==
+/// 68600
+/// 18320
+/// 59540
+/// 50060
+/// 1580
+
+/// ==> /tmp/SAMPLE.dat <==
+/// K
+/// B
+/// X
+/// G
+/// P
+/// $ wc -l /tmp/SAMPLE*
+///  1000 /tmp/SAMPLE
+///  1000 /tmp/SAMPLE.dat
+///  2000 total
+/// $ ls -l /tmp/SAMPLE*
+/// -rw-rw-r-- 1 user user 11000 Jul 09 22:10 /tmp/SAMPLE
+/// -rw-rw-r-- 1 user user 2000 Jul 09 22:10 /tmp/SAMPLE.dat
 /// ```
 ///
-/// The file size will (and should!) always be a multiple of the number of
+/// The file sizes will (and should!) always be a multiple of the number of
 /// key/value pairs, since each line is padded to have the same length.
 /// Now, we can have another program to get the key/value pairs.
 ///
