@@ -37,7 +37,7 @@
 //! [finish]: struct.HashFile.html#method.finish
 //! [capacity]: struct.HashFile.html#method.set_capacity
 //! [hash-file]: struct.HashFile.html
-/// [wiki]: https://en.wikipedia.org/wiki/B-tree#B-tree_usage_in_databases
+//! [wiki]: https://en.wikipedia.org/wiki/B-tree#B-tree_usage_in_databases
 mod helpers;
 
 use helpers::{SEP, create_or_open_file, hash, get_size};
@@ -135,8 +135,8 @@ impl<K: Display + FromStr + Hash> Hash for KeyIndex<K> {
 /// - Basically, the files are in DSV format - one has keys and value indices separated by a
 /// null byte, while the other has values separated by `\n`. Each line in the "key" file is
 /// ensured to have the same length, by properly padding it with null bytes, which is done by
-/// calling the [`finish`][finish] method. The method also does a cleanup and gets rid of
-/// unnecessary values from the "data" file.
+/// calling the [`finish`][finish] method, which also does a cleanup and gets rid of unnecessary
+/// values from the "data" file.
 ///
 /// - While getting, the hash for the given key is computed, and a [binary search][search]
 /// is made by seeking through the file. The value index is found in O(log-n) time, and the value
@@ -147,7 +147,7 @@ impl<K: Display + FromStr + Hash> Hash for KeyIndex<K> {
 /// Once you've added the package to your `Cargo.toml`
 ///
 /// ``` toml
-/// catalog = "0.1.0"
+/// catalog = "0.1.1"
 /// ```
 ///
 /// ... it can be used as follows,
@@ -327,7 +327,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
     fn rename_temp_file(&mut self, rename_dat: bool) -> Result<(), String> {
         if rename_dat {
             try!(fs::rename(format!("{}{}", &self.data_path, TEMP_SUFFIX), &self.data_path)
-                    .map_err(|e| format!("Cannot rename the data file! ({})", e.description())));
+                    .map_err(|e| format!("Cannot rename the temp data file! ({})", e.description())));
             self.data_file = try!(create_or_open_file(&self.data_path));
         }
 

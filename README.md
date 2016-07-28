@@ -11,7 +11,7 @@ Note that this is still **experimental**, and so use it at your own risk!
 Add the following to your `Cargo.toml`...
 
 ``` toml
-catalog = "0.1.0"
+catalog = "0.1.1"
 ```
 
 Have a look at the [detailed example](https://wafflespeanut.github.io/rust-catalog/catalog/struct.HashFile.html#examples) for the precise usage.
