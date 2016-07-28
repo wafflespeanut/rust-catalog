@@ -26,7 +26,7 @@
 //! example, an average seek takes around 0.3 ms, and a file containing a trillion
 //! values demands about 40 seeks (in the worse case), which translates to 12 ms.
 //!
-//! This kind of "search and seek" is [already being used](wiki) by databases. But,
+//! This kind of "search and seek" is [already being used][wiki] by databases. But,
 //! the system is simply an unnecessary complication if you just want a table with
 //! a *zillion* rows and only two columns (a key and a value).
 //!
@@ -54,44 +54,45 @@ use std::mem;
 use std::ops::AddAssign;
 use std::str::FromStr;
 
-const TEMP_FILE: &'static str = ".hash_file";
+const TEMP_SUFFIX: &'static str = ".hash_file";
+const DAT_SUFFIX: &'static str = ".dat";
 
 // FIXME: have a bool for marking key/vals to be removed (required for `remove` method)
-struct KeyValue<K: Display + FromStr + Hash, V: Display + FromStr> {
+struct KeyIndex<K: Display + FromStr + Hash> {
     key: K,
-    value: V,
+    idx: u64,
     count: usize,
 }
 
-impl<K: Display + FromStr + Hash, V: Display + FromStr> KeyValue<K, V> {
-    pub fn new(key: K, val: V) -> KeyValue<K, V> {
-        KeyValue {
+impl<K: Display + FromStr + Hash> KeyIndex<K> {
+    pub fn new(key: K) -> KeyIndex<K> {
+        KeyIndex {
             key: key,
-            value: val,
+            idx: 0,
             count: 0,
         }
     }
 }
 
 // FIXME: This should be changed to serialization
-impl<K: Display + FromStr + Hash, V: Display + FromStr> Display for KeyValue<K, V> {
+impl<K: Display + FromStr + Hash> Display for KeyIndex<K> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}{}{}{}{}", self.key, SEP, self.value, SEP, self.count)
+        write!(f, "{}{}{}{}{}", self.key, SEP, self.idx, SEP, self.count)
     }
 }
 
-impl<K: Display + FromStr + Hash, V: Display + FromStr> FromStr for KeyValue<K, V> {
+impl<K: Display + FromStr + Hash> FromStr for KeyIndex<K> {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<KeyValue<K, V>, String> {
+    fn from_str(s: &str) -> Result<KeyIndex<K>, String> {
         let mut split = s.split(SEP);
-        Ok(KeyValue {
+        Ok(KeyIndex {
             key: try!(split.next().unwrap_or("")
                                   .parse::<K>()
                                   .map_err(|_| format!("Cannot parse the key!"))),
-            value: try!(split.next().unwrap_or("")
-                                    .parse::<V>()
-                                    .map_err(|_| format!("Cannot parse the value!"))),
+            idx: try!(split.next().unwrap_or("")
+                                  .parse::<u64>()
+                                  .map_err(|_| format!("Cannot parse the index!"))),
             count: try!(split.next().unwrap_or("")
                                     .parse::<usize>()
                                     .map_err(|_| format!("Cannot parse 'overwritten' count"))),
@@ -99,14 +100,14 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> FromStr for KeyValue<K, 
     }
 }
 
-impl<K: Display + FromStr + Hash, V: Display + FromStr> AddAssign for KeyValue<K, V> {
-    fn add_assign(&mut self, other: KeyValue<K, V>) {
-        self.value = other.value;
+impl<K: Display + FromStr + Hash> AddAssign for KeyIndex<K> {
+    fn add_assign(&mut self, other: KeyIndex<K>) {
+        self.idx = other.idx;
         self.count += 1;
     }
 }
 
-impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> {
+impl<K: Display + FromStr + Hash> Hash for KeyIndex<K> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.key.hash(state);
     }
@@ -146,7 +147,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 ///
 /// // This will create a new file in the path (if it doesn't exist)
 /// let mut hash_file: HashFile<usize, _> =
-///     try!(HashFile::new("/tmp/SAMPLE.dat").map(|hf| hf.set_capacity(100)));
+///     try!(HashFile::new("/tmp/SAMPLE").map(|hf| hf.set_capacity(100)));
 ///
 /// // We don't have to mention all the types explicitly, leaving it to type inference
 /// // But, there's a reason why I mentioned `usize` (which we'll see in a moment).
@@ -183,16 +184,16 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 /// Now, let's have a quick peek inside the generated file.
 ///
 /// ``` bash
-/// $ head -5 /tmp/SAMPLE.dat
+/// $ head -5 /tmp/SAMPLE
 /// 686K0
 /// 183B0
 /// 595X0
 /// 500G0
 /// 15P0
-/// $ wc -l /tmp/SAMPLE.dat
+/// $ wc -l /tmp/SAMPLE
 /// 1000
-/// $ ls -l /tmp/SAMPLE.dat
-/// -rw-rw-r-- 1 user user 8000 Jul 09 22:10 /tmp/SAMPLE.dat
+/// $ ls -l /tmp/SAMPLE
+/// -rw-rw-r-- 1 user user 8000 Jul 09 22:10 /tmp/SAMPLE
 /// ```
 ///
 /// The file size will (and should!) always be a multiple of the number of
@@ -201,7 +202,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 ///
 /// ``` rust
 /// // This will open the file in the path (if it exists)
-/// let mut hf: HashFile<usize, String> = try!(HashFile::new("/tmp/SAMPLE.dat"));
+/// let mut hf: HashFile<usize, String> = try!(HashFile::new("/tmp/SAMPLE"));
 /// ```
 ///
 /// A couple of things to note here. Before getting, we need to mention the types,
@@ -243,10 +244,6 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> Hash for KeyValue<K, V> 
 /// (whenever the program starts).
 ///
 /// # Drawbacks:
-/// - **Giant file:** Values that can serialize to a large number of bytes, such as sequences,
-/// recursive types and maps can have long lines in the file, which leads to a magnanimous
-/// padding in other lines (thereby increasing the file size).
-///
 /// - **Sluggish insertion:** Re-allocation in memory is lightning fast, while putting stuff into
 ///  the usual maps, and so it won't be obvious during the execution of a program. But, that's not
 /// the case when it comes to file. Flushing to a file takes time (as it makes OS calls), and it
@@ -261,7 +258,10 @@ pub struct HashFile<K: Display + FromStr + Hash, V: Display + FromStr> {
     file: File,
     path: String,
     size: u64,
-    hashed: BTreeMap<u64, KeyValue<K, V>>,
+    data_file: File,
+    data_path: String,
+    data_idx: u64,
+    hashed: BTreeMap<u64, (KeyIndex<K>, V)>,
     capacity: usize,
     line_length: usize,
 }
@@ -271,6 +271,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
     pub fn new(path: &str) -> Result<HashFile<K, V>, String> {
         let mut file = try!(create_or_open_file(&path));
         let file_size = get_size(&file).unwrap_or(0);
+        let data_path = format!("{}{}", path, DAT_SUFFIX);
 
         Ok(HashFile {
             hashed: BTreeMap::new(),
@@ -278,7 +279,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
             line_length: match file_size > 0 {
                 true => {
                     let line = try!(read_one_line(&mut file));
-                    line.trim_right().len()
+                    line.len()
                 },
                 false => 0,
             },
@@ -286,6 +287,9 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
                 try!(seek_from_start(&mut file, 0));
                 file
             },
+            data_file: try!(create_or_open_file(&data_path)),
+            data_path: data_path,
+            data_idx: 0,
             path: path.to_owned(),
             size: file_size,
         })
@@ -297,8 +301,14 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
         self
     }
 
-    fn rename_temp_file(&mut self) -> Result<(), String> {
-        try!(fs::rename(format!("{}{}", &self.path, TEMP_FILE), &self.path)
+    fn rename_temp_file(&mut self, rename_dat: bool) -> Result<(), String> {
+        if rename_dat {
+            try!(fs::rename(format!("{}{}", &self.data_path, TEMP_SUFFIX), &self.data_path)
+                    .map_err(|e| format!("Cannot rename the data file! ({})", e.description())));
+            self.data_file = try!(create_or_open_file(&self.data_path));
+        }
+
+        try!(fs::rename(format!("{}{}", &self.path, TEMP_SUFFIX), &self.path)
                 .map_err(|e| format!("Cannot rename the temp file! ({})", e.description())));
         self.file = try!(create_or_open_file(&self.path));
         self.size = try!(get_size(&self.file));
@@ -308,30 +318,37 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
     /// Run this finally to flush the values (if any) from the struct to the file
     pub fn finish(&mut self) -> Result<(), String> {
         if self.hashed.len() > 0 {
-            // Seeking, so that we can make sure we're reading from the start.
-            // Say, we `get` something (after calling this method) and insert
-            // more stuff, and call this method once more. Now, the cursor won't
-            // be at the start of the file.
+            // seeking, so that we can ensure that the cursor is at the start while reading,
+            // and at the end while writing.
             try!(seek_from_start(&mut self.file, 0));
+            try!(seek_from_start(&mut self.data_file, self.data_idx));
             try!(self.flush_map());
         }
 
-        // FIXME: any way around this?
         // We need to traverse one last time to confirm that each row has the same length
+        // (and of course, remove the *removed* values from the data file)
 
         {
             let buf_reader = BufReader::new(&mut self.file);
-            let mut out_file = try!(create_or_open_file(&format!("{}{}", &self.path, TEMP_FILE)));
+            let mut out_file = try!(create_or_open_file(&format!("{}{}", &self.path, TEMP_SUFFIX)));
             let mut buf_writer = BufWriter::new(&mut out_file);
+            let mut data_file = try!(create_or_open_file(&format!("{}{}", &self.data_path, TEMP_SUFFIX)));
+            let mut data_writer = BufWriter::new(&mut data_file);
+            self.data_idx = 0;
 
-            for line in buf_reader.lines().filter_map(|l| l.ok()) {
+            for ref line in buf_reader.lines().filter_map(|l| l.ok()) {
+                let mut key_index = try!(line.parse::<KeyIndex<K>>());
+                try!(seek_from_start(&mut self.data_file, key_index.idx));
+                let value = try!(read_one_line(&mut self.data_file));
+                key_index.idx = self.data_idx;
+                self.data_idx += try!(write_buffer(&mut data_writer, &value, &mut 0));
                 // Even though this takes a mutable reference, we can be certain that
                 // we've found the maximum row length for this session
-                try!(write_buffer(&mut buf_writer, &line, &mut self.line_length));
+                try!(write_buffer(&mut buf_writer, &key_index.to_string(), &mut self.line_length));
             }
         }
 
-        self.rename_temp_file()
+        self.rename_temp_file(true)
     }
 
     fn flush_map(&mut self) -> Result<(), String> {
@@ -339,8 +356,9 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
 
         {
             let buf_reader = BufReader::new(&mut self.file);
-            let mut out_file = try!(create_or_open_file(&format!("{}{}", &self.path, TEMP_FILE)));
+            let mut out_file = try!(create_or_open_file(&format!("{}{}", &self.path, TEMP_SUFFIX)));
             let mut buf_writer = BufWriter::new(&mut out_file);
+            let mut data_writer = BufWriter::new(&mut self.data_file);
 
             // both the iterators throw the values in ascending order
             let mut file_iter = buf_reader.lines().filter_map(|l| l.ok()).peekable();
@@ -348,7 +366,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
 
             loop {
                 let compare_result = match (file_iter.peek(), map_iter.peek()) {
-                    (Some(file_line), Some(&(ref btree_key_hash, _))) => {
+                    (Some(file_line), Some(&(btree_key_hash, _))) => {
                         let key = file_line.split(SEP).next().unwrap();
                         let file_key_hash = match key.parse::<K>() {
                             Ok(k_v) => hash(&k_v),
@@ -359,7 +377,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
                             },
                         };
 
-                        file_key_hash.cmp(btree_key_hash)
+                        file_key_hash.cmp(&btree_key_hash)
                     },
                     (Some(_), None) => Ordering::Less,
                     (None, Some(_)) => Ordering::Greater,
@@ -369,14 +387,17 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
                 match compare_result {
                     Ordering::Equal => {
                         let file_line = file_iter.next().unwrap();
-                        let (_, btree_key_val) = map_iter.next().unwrap();
-                        let mut file_key_val = match file_line.parse::<KeyValue<K, V>>() {
-                            Ok(k_v) => k_v,
+                        let (_, (mut btree_key, val)) = map_iter.next().unwrap();
+                        btree_key.idx = self.data_idx;
+                        self.data_idx += try!(write_buffer(&mut data_writer, &val.to_string(), &mut 0));
+
+                        let mut file_key = match file_line.parse::<KeyIndex<K>>() {
+                            Ok(k_i) => k_i,
                             Err(_) => continue,     // skip on error
                         };
 
-                        file_key_val += btree_key_val;
-                        try!(write_buffer(&mut buf_writer, &file_key_val.to_string(),
+                        file_key += btree_key;
+                        try!(write_buffer(&mut buf_writer, &file_key.to_string(),
                                           &mut self.line_length));
                     },
                     Ordering::Less => {
@@ -384,27 +405,34 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
                                           &mut self.line_length));
                     },
                     Ordering::Greater => {
-                        let (_, btree_key_val) = map_iter.next().unwrap();
-                        try!(write_buffer(&mut buf_writer, &(btree_key_val.to_string()),
+                        let (_, (mut btree_key, val)) = map_iter.next().unwrap();
+                        btree_key.idx = self.data_idx;
+                        self.data_idx += try!(write_buffer(&mut data_writer, &val.to_string(), &mut 0));
+
+                        try!(write_buffer(&mut buf_writer, &(btree_key.to_string()),
                                           &mut self.line_length));
                     },
                 }
             }
         }
 
-        self.rename_temp_file()
+        self.rename_temp_file(false)
     }
 
     /// Insert a key/value pair
     pub fn insert(&mut self, key: K, value: V) -> Result<(), String> {
-        let key_val = KeyValue::new(key, value);
-        let hashed = hash(&key_val);
-        if let Some(k_v) = self.hashed.get_mut(&hashed) {
-            *k_v += key_val;
+        let mut key_idx = KeyIndex::new(key);
+        let hashed = hash(&key_idx);
+        if let Some(key_val) = self.hashed.get_mut(&hashed) {
+            *key_val = {
+                key_idx.count += 1;
+                (key_idx, value)
+            };
+
             return Ok(())
         }
 
-        self.hashed.insert(hashed, key_val);
+        self.hashed.insert(hashed, (key_idx, value));
         if self.hashed.len() > self.capacity {  // flush to file once the capacity is full
             try!(self.flush_map());
         }
@@ -415,7 +443,7 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
     /// Get the value corresponding to the key from the file
     pub fn get(&mut self, key: &K) -> Result<Option<(V, usize)>, String> {
         let hashed_key = hash(key);
-        if self.size == 0 {
+        if self.size == 0 || try!(get_size(&self.data_file)) == 0 {
             return Ok(None)
         }
 
@@ -440,8 +468,12 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
             let hashed = hash(&key);
 
             if hashed == hashed_key {
-                let key_val = try!(line.trim_right().parse::<KeyValue<K, V>>());
-                return Ok(Some((key_val.value, key_val.count)))
+                let key_index = try!(line.parse::<KeyIndex<K>>());
+                try!(seek_from_start(&mut self.data_file, key_index.idx));
+                let line = try!(read_one_line(&mut self.data_file));
+                let value = try!(line.parse::<V>()
+                                     .map_err(|_| format!("Cannot parse the value from file!")));
+                return Ok(Some((value, key_index.count)))
             } else if hashed < hashed_key {
                 low = mid + 1;
             } else {

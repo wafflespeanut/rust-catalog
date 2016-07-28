@@ -16,7 +16,7 @@ pub fn hash<T: Hash>(obj: &T) -> u64 {
 /// Writes a line to the given buffer
 /// (pads the line with null bytes to fit to the given length)
 pub fn write_buffer(buf_writer: &mut BufWriter<&mut File>,
-                    line: &str, pad_length: &mut usize) -> Result<(), String> {
+                    line: &str, pad_length: &mut usize) -> Result<u64, String> {
     let padding = if line.len() < *pad_length {
         iter::repeat(SEP).take(*pad_length - line.len()).collect::<String>()
     } else {
@@ -28,11 +28,13 @@ pub fn write_buffer(buf_writer: &mut BufWriter<&mut File>,
     };
 
     let line = format!("{}{}\n", line, padding);
-    try!(buf_writer.write(line.as_bytes())
-                   .map_err(|e| format!("Cannot write line to buffer! ({})", e.description())));
+    let n = try!(buf_writer.write(line.as_bytes())
+                           .map_err(|e| format!("Cannot write line to buffer! ({})",
+                                                e.description())));
     try!(buf_writer.flush()
-                   .map_err(|e| format!("Cannot flush the buffer to file!({})", e.description())));
-    Ok(())
+                   .map_err(|e| format!("Cannot flush the buffer to file!({})",
+                                        e.description())));
+    Ok(n as u64)
 }
 
 /// Opens a file in read/write mode (or creates if it doesn't exist)
@@ -46,22 +48,33 @@ pub fn create_or_open_file(path: &str) -> Result<File, String> {
                                      path, e.description()))
 }
 
+/// Move the cursor to a position from the start of the file
+/// (since we're dealing with absolute positions in our API)
 pub fn seek_from_start(file: &mut File, pos: u64) -> Result<(), String> {
     file.seek(SeekFrom::Start(pos))
         .map(|_| ())
         .map_err(|e| format!("Cannot seek through file! ({})", e.description()))
 }
 
+/// Get the file size
 pub fn get_size(file: &File) -> Result<u64, String> {
     file.metadata()
         .map(|m| m.len())
         .map_err(|e| format!("Cannot obtain file metadata ({})", e.description()))
 }
 
+/// Read one line from the cursor's current position and pop newline (if any) from the end
 pub fn read_one_line(file: &mut File) -> Result<String, String> {
     let mut reader = BufReader::new(file);
     let mut line = String::new();
-    reader.read_line(&mut line)
-          .map(|_| line)
-          .map_err(|e| format!("Cannot read line from file! ({})", e.description()))
+    reader.read_line(&mut line).map(|_| {
+        if line.ends_with('\n') {
+            line.pop();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+        }
+
+        line
+    }).map_err(|e| format!("Cannot read line from file! ({})", e.description()))
 }
