@@ -229,7 +229,7 @@ impl<K: Display + FromStr + Hash> Hash for KeyIndex<K> {
 /// ```
 ///
 /// A couple of things to note here. Before getting, we need to mention the types,
-/// because rustc doesn't know what type we have in the file (and, it'll throw an error).
+/// because `rustc` doesn't know what type we have in the file (and, it'll throw an error).
 ///
 /// Moreover, if we hadn't explicitly mentioned `usize` during insertion,
 /// `rustc` would've gone for some default type, and if we mention some other primitive
@@ -290,7 +290,15 @@ pub struct HashFile<K: Display + FromStr + Hash, V: Display + FromStr> {
 }
 
 impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
-    /// Create a new `HashFile` for mapping key/value pairs in the given path
+    /// Create a new `HashFile` for mapping key/value pairs in the given path.
+    ///
+    /// ``` rust
+    /// let mut hf = try!(HashFile::new("/tmp/SAMPLE"));
+    /// ```
+    ///
+    /// This will maintain two files - `SAMPLE` and `SAMPLE.dat` in `/tmp/`.
+    /// The latter has the values, while the former has the keys (sorted by its hash)
+    /// along with the value indices and overwritten count.
     pub fn new(path: &str) -> Result<HashFile<K, V>, String> {
         let mut file = try!(create_or_open_file(&path));
         let file_size = get_size(&file).unwrap_or(0);
@@ -318,7 +326,15 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
         })
     }
 
-    /// Set the capacity of the `HashFile` (to flush to the file whenever it exceeds this value)
+    /// Set the capacity of the `HashFile` (to flush to the file whenever it exceeds this value).
+    /// Since the constructor returns a `Result`, we can chain this method like so...
+    ///
+    /// ``` rust
+    /// let mut hf = try!(HashFile::new("/tmp/SAMPLE").map(|hf| hf.set_capacity(1000)));
+    /// ```
+    ///
+    /// Note that `HashFile` flushes for every insertion by default, which is pretty inefficient.
+    /// Hence, setting a proper capacity (depending on the usage) is necessary.
     pub fn set_capacity(mut self, capacity: usize) -> HashFile<K, V> {
         self.capacity = capacity;
         self
@@ -338,13 +354,23 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
         Ok(())
     }
 
-    /// Run this finally to flush the values (if any) from the struct to the file
+    /// Run this finally to flush the values (if any) from the struct to the file.
+    ///
+    /// ``` rust
+    /// let mut hf = try!(HashFile::new("/tmp/SAMPLE").map(|hf| hf.set_capacity(100)));
+    ///
+    /// for i in 97..123 {
+    ///     try!(hf.insert(i, format!("{}", i as char)));
+    /// }
+    ///
+    /// try!(hf.finish());
+    /// ```
+    ///
+    /// This method is essential, because the "key" file would otherwise be invalid. This
+    /// method ensures a constant line length throughout the file by properly padding them
+    /// whenever required. It also gets rid of the unnecessary values from the "data" file.
     pub fn finish(&mut self) -> Result<(), String> {
         if self.hashed.len() > 0 {
-            // seeking, so that we can ensure that the cursor is at the start while reading,
-            // and at the end while writing.
-            try!(seek_from_start(&mut self.file, 0));
-            try!(seek_from_start(&mut self.data_file, self.data_idx));
             try!(self.flush_map());
         }
 
@@ -378,6 +404,11 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
         let map = mem::replace(&mut self.hashed, BTreeMap::new());
 
         {
+            // seeking, so that we can ensure that the cursor is at the start while reading,
+            // and at the end while writing.
+            try!(seek_from_start(&mut self.file, 0));
+            try!(seek_from_start(&mut self.data_file, self.data_idx));
+
             let buf_reader = BufReader::new(&mut self.file);
             let mut out_file = try!(create_or_open_file(&format!("{}{}", &self.path, TEMP_SUFFIX)));
             let mut buf_writer = BufWriter::new(&mut out_file);
@@ -442,7 +473,16 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
         self.rename_temp_file(false)
     }
 
-    /// Insert a key/value pair
+    /// Insert a key/value pair into the map.
+    ///
+    /// ``` rust
+    /// let mut hf = try!(HashFile::new("/tmp/SAMPLE").map(|hf| hf.set_capacity(1000)));
+    ///
+    /// try!(hf.insert("foo", "bar"));
+    /// ```
+    ///
+    /// Note that this method flushes the stuff to the files once the map reaches the
+    /// defined capacity.
     pub fn insert(&mut self, key: K, value: V) -> Result<(), String> {
         let mut key_idx = KeyIndex::new(key);
         let hashed = hash(&key_idx);
@@ -463,7 +503,24 @@ impl<K: Display + FromStr + Hash, V: Display + FromStr> HashFile<K, V> {
         Ok(())
     }
 
-    /// Get the value corresponding to the key from the file
+    /// Get the value corresponding to the key from the map.
+    ///
+    /// ``` rust
+    /// let mut hf = try!(HashFile::new("/tmp/SAMPLE").map(|hf| hf.set_capacity(1000)));
+    /// try!(hf.insert(0, "foo"));
+    /// try!(hf.insert(1, "bar"));
+    /// try!(hf.finish());      // don't forget to finish!
+    ///
+    /// let value = try!(hf.get(&0));
+    /// assert_eq!(Some(("foo", 0)), value);
+    /// ```
+    ///
+    /// Unlike the `get` methods of other maps, this takes a mutable reference, because it
+    /// needs read access to the underlying file descriptors, as it moves the cursor here and
+    /// there to read the key/value pairs.
+    ///
+    /// Also, note that this method only gets the stuff from the file. So, it's necessary
+    /// that we've already flushed whatever we have on hand (by calling `finish`).
     pub fn get(&mut self, key: &K) -> Result<Option<(V, usize)>, String> {
         let hashed_key = hash(key);
         if self.size == 0 || try!(get_size(&self.data_file)) == 0 {

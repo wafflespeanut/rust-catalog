@@ -23,6 +23,5 @@ Have a look at the [detailed example](https://wafflespeanut.github.io/rust-catal
  - [ ] maintain an auxiliary index for speeding up the search
  - [ ] merge the auxiliary index, data file and the main file (during `finish`)
  - [ ] add more methods required for maps (for now, it only supports `insert` and `get`)
- - [ ] documentation of methods
  - [ ] memory-mapped file?
  - [ ] maintain a separate thread for file-writing, so that we don't block on insertion
