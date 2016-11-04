@@ -1,10 +1,10 @@
+use SEP;
+
 use std::error::Error;
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher, SipHasher};
 use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::iter;
-
-pub const SEP: char = '\0';
 
 /// Computes the hash for the given object using the built-in `SipHasher`
 pub fn hash<T: Hash>(obj: &T) -> u64 {
