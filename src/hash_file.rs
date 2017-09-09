@@ -234,7 +234,7 @@ impl<K: Display + FromStr + Hash> Hash for KeyIndex<K> {
 /// in our case.
 ///
 /// [finish]: #method.finish
-/// [hasher]: https://doc.rust-lang.org/std/hash/struct.SipHasher.html
+/// [hasher]: https://docs.rs/siphasher/%5E0.2/siphasher/sip/struct.SipHasher.html
 /// [result]: https://doc.rust-lang.org/std/result/enum.Result.html
 /// [search]: https://en.wikipedia.org/wiki/Binary_search_algorithm
 pub struct HashFile<K: Display + FromStr + Hash, V: Display + FromStr> {

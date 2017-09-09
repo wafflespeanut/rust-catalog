@@ -39,6 +39,8 @@
 //! [hash-file]: struct.HashFile.html
 //! [wiki]: https://en.wikipedia.org/wiki/B-tree#B-tree_usage_in_databases
 
+extern crate siphasher;
+
 pub const SEP: char = '\0';
 
 mod helpers;

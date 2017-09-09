@@ -1,8 +1,9 @@
 use SEP;
 
+use siphasher::sip::SipHasher;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
-use std::hash::{Hash, Hasher, SipHasher};
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::iter;
 

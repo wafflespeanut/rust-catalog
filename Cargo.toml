@@ -7,7 +7,7 @@ repository = "https://github.com/Wafflespeanut/rust-catalog"
 readme = "README.md"
 license = "MIT"
 
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Ravi Shankar <wafflespeanut@gmail.com>"]
 keywords = ["map", "file", "binary-search", "key-value"]
 
@@ -15,3 +15,4 @@ keywords = ["map", "file", "binary-search", "key-value"]
 name = "catalog"
 
 [dependencies]
+siphasher = "0.2"
